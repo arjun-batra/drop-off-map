@@ -1,0 +1,423 @@
+# Design: Drop-off Point Optimizer
+
+Status: **DRAFT — pending Gate 3 (user approval)**
+Source: `docs/requirements.md` (FINAL, Gate 2 passed 2026-07-10), `docs/idea-brief.md` (approved, Gate 1 passed 2026-07-10)
+Owner: tech-lead. Do not edit outside this agent.
+
+---
+
+## 0. Process note for the orchestrator
+
+This app has a user-facing UI (address inputs, results cards, warnings, possibly a map view). Per `CLAUDE.md`, **designer should produce `docs/ux-spec.md` in parallel with this design** if that has not already been kicked off. This design document specifies functional/data contracts the frontend must satisfy (what data exists, what states are possible) but does **not** specify visual layout, styling, or interaction detail — that is ux-spec.md's job. Recommend routing to designer now, in parallel with Gate 3 review of this document.
+
+---
+
+## 1. Open questions (must be resolved before/at Gate 3)
+
+These are **not** silently decided below; each is flagged to the appropriate owner per the no-inference rule.
+
+### 1.1 To pm → user (business/requirements ambiguity)
+
+- **DQ-1 (FR-004 scope — which locations get the radius check?)**: FR-004 says "If the start or destination point falls outside the configured geographic service radius... the system shall block the request." The app has **three** location inputs (start, driver's destination, passenger's destination — FR-001), but FR-004's text only says "destination" (singular). Does the radius check apply to:
+  (a) start + driver's destination only, or
+  (b) all three inputs, including the passenger's destination (which could plausibly be far outside the 200km zone even if the driver's own trip is local)?
+  This changes both validation logic and UX messaging. **Design below assumes (b) — all three locations must be in-radius — as the more conservative/safer reading, pending explicit confirmation.** This assumption is called out in section 5.2 and must be confirmed or corrected before INC-2 is built.
+
+### 1.2 To user directly (architecture/cost trade-off — routed via pm per pipeline)
+
+- **DQ-2 (Provider choice + cost exposure)**: See section 3 for the full trade-off. Recommendation is Google Maps Platform as the sole provider. Given this app's call pattern (multiple provider calls per single user submission — see section 4.5), an illustrative estimate is **~2,000-2,500 free user submissions/month** before the $200/mo free credit is exhausted and pay-as-you-go billing begins (approximate, based on publicly listed per-1000-request pricing at time of writing — **must be re-verified against the current Google Cloud pricing page before launch**, as these prices change). Needs explicit user go-ahead: accept Google Maps Platform as sole provider, accept this free-tier ceiling estimate, and confirm no additional dollar cost ceiling/billing alert is required beyond the existing `APP_MODE` manual switch (NFR-007 already says no automated action is required — but idea-brief risk #2 asked for an explicit cost-ceiling decision, which this resolves only if the user agrees).
+- **DQ-3 (NFR-004 feasibility — 5 second target)**: See section 6 for full analysis. Verdict: **5 seconds is achievable as a typical/median case with the parallelized batch design below, but is not a hard guarantee under tail latency, provider slowness, or provider throttling** (compounded by NFR-007's explicit decision not to rate-limit). Recommendation: treat 5s as a soft target with a hard per-request orchestration timeout and a graceful degraded response beyond that (section 6.3). **Needs explicit user sign-off** that this interpretation of NFR-004 is acceptable, per NFR-004's own requirement to escalate if the target isn't cleanly achievable.
+- **DQ-4 (Billing alerting / retention ops)**: The $ cost ceiling and any billing-alert configuration is really an operational/runbook concern, not a design mechanism — flagging so the orchestrator ensures **release** picks this up in `docs/runbook.md` before INC-1 (this design only builds the `APP_MODE` toggle mechanism itself, per FR-017; it does not implement automatic cost-based switching, which is out of scope per FR-017/NFR-007).
+
+Until DQ-1 through DQ-3 are resolved, treat sections 3, 5.2, and 6 as provisional.
+
+---
+
+## 2. Architecture overview
+
+Stateless client/server web app. No database, no session persistence of trip data (NFR-003).
+
+```
+┌─────────────────────────┐        ┌──────────────────────────────┐        ┌───────────────────────────┐
+│   Browser (mobile-first │  HTTPS │  Backend API (stateless,      │  HTTPS │  Maps/Routing/Transit      │
+│   responsive SPA)       │◄──────►│  serverless-friendly)         │◄──────►│  Provider (Google Maps     │
+│  - address inputs        │        │  - config loader/validator    │        │  Platform, see section 3)  │
+│  - "use my location"     │        │  - auth gate (APP_MODE)       │        │  - Geocoding/Places        │
+│  - detour minutes input  │        │  - geocoding proxy             │        │  - Directions (driving,    │
+│  - results display       │        │  - candidate generator         │        │    live traffic)           │
+│  - map (Leaflet/OSM,     │        │  - detour evaluator (batched)  │        │  - Distance Matrix         │
+│    no provider key       │        │  - transit evaluator           │        │  - Directions (transit,    │
+│    needed for tiles)     │        │  - ranker/fallback logic       │        │    live schedules)         │
+└─────────────────────────┘        └──────────────────────────────┘        └───────────────────────────┘
+```
+
+Key architectural decisions:
+- **All provider calls happen server-side.** `MAP_API_KEY` is never sent to the browser. This is required for key security and to let the backend enforce `APP_MODE` gating and radius checks before any billable call is made.
+- **No database.** All computation is request-scoped, in-memory, and discarded after the response is sent (NFR-003). Any operational logging must avoid persisting raw coordinates long-term (see section 9, flagged to release/runbook for retention policy).
+- **Map rendering uses Leaflet + OpenStreetMap tiles**, not Google's Maps JavaScript API, to avoid a second billable Google SKU (Dynamic Maps) purely for tile display. Only Directions/Distance Matrix/Geocoding calls (all server-proxied) touch the provider's billing.
+- **Backend is stateless per-request**, which makes it a good fit for serverless hosting (scales with bursty public traffic, no idle cost). Recommend deploying frontend + backend API routes together on a platform like Vercel/Netlify Functions, or a small always-on container on Render/Fly if the release agent prefers simpler local dev parity. Final hosting platform choice belongs to the release agent's runbook, constrained by: must support environment-variable-based config injection (section 7), must support HTTPS, must support the request/response shape in section 5.
+
+---
+
+## 3. Maps / routing / transit provider recommendation
+
+### Requirement recap
+Needed capabilities: live-traffic-aware driving directions, live transit departure/schedule data (not static-only) with walk+wait+ride+transfer breakdown, geocoding + address autocomplete, all within ~200km of Toronto, across "all locally available" transit modes (TTC subway/streetcar/bus, GO Transit rail/bus, regional agencies like MiWay, YRT, Durham Region Transit, etc.).
+
+### Providers considered
+
+| Provider | Live traffic driving | Live transit itineraries (walk+wait+ride+transfers) | Geocoding/autocomplete | Verdict |
+|---|---|---|---|---|
+| **Google Maps Platform** | Yes (Directions/Distance Matrix, `departure_time=now`, traffic-aware duration) | Yes — Google has real-time GTFS-RT ingestion agreements with TTC, GO/Metrolinx, and most regional Toronto-area agencies; Directions API `mode=transit` returns live-adjusted arrival/departure predictions where available, with per-step walk/wait/ride breakdown | Yes (Geocoding API, Places Autocomplete) | **Recommended** — only evaluated provider that covers all three needs from a single vendor with a documented real-time transit integration for this region |
+| Mapbox | Yes (traffic-aware Directions) | **No** — Mapbox has no first-party live public-transit itinerary product | Yes | Rejected — would need a second vendor for transit, defeating "stay simple/single-vendor" goal |
+| HERE Technologies | Yes | Partial/uncertain — HERE's intermodal routing exists but public real-time transit coverage/reliability for the Toronto region is not well-documented and would need live validation | Yes | Not recommended without a validation spike; deprioritized vs. Google given time constraints |
+| TomTom | Yes (strong traffic product) | No | Partial | Rejected — no transit |
+| Self-hosted OSRM (driving) + self-hosted OpenTripPlanner 2 (transit, fed by open GTFS + GTFS-RT feeds from Metrolinx/TTC open data) | **No** — OSRM's default road network uses static weights; genuine live traffic still requires a separate paid/free traffic-data feed layered in (e.g., TomTom Traffic flow API) | Yes, using free/open GTFS + GTFS-RT feeds, if agencies' RT feeds are reliable (idea-brief risk #3 — not fully validated) | Needs separate geocoder (e.g., Nominatim, free but lower quality/rate-limited) | Considered as a **future cost-reduction path**, not recommended for v1 — see below |
+
+### Recommendation: Google Maps Platform (single vendor)
+
+Covers Geocoding API + Places Autocomplete (FR-015), Directions API driving mode with live traffic (FR-006a/b, FR-007), Directions API transit mode with live schedule data and per-leg walk/wait/ride/transfer breakdown (FR-006c/d/e, FR-008), and Distance Matrix API for batched detour evaluation (section 4.3). Single API key, single billing account, single vendor to integrate and monitor — appropriate for an MVP where engineering time is scarce and the priority is shipping something trustworthy quickly (idea-brief: "fast/simple to use," and by extension, fast/simple to build reliably).
+
+### Free tier vs. paid tier trade-off (for `APP_MODE`)
+
+- **Free tier**: Google Maps Platform provides a recurring monthly usage credit (approximately $200 USD/month at time of writing — **verify current amount before launch, this changes**) applied automatically to the billing account; no separate "free tier mode" exists on Google's side, this is just usage under the credit. Per-1000-request list prices are roughly in the $5-$10 range depending on SKU (Geocoding, Directions, Distance Matrix, Places), also subject to change and volume-tiered discounts — **verify current rates before launch**.
+  - Each user submission to this app costs roughly 10-15 provider calls (3 geocodes if not already resolved client-side + 1 direct route + 2 batched Distance Matrix calls + up to `MAX_TRANSIT_EVALUATIONS_PER_REQUEST` transit Directions calls, default 8) — see section 4.5 for the exact accounting.
+  - Illustrative estimate: ~$0.07-$0.10 of provider cost per user submission → **~2,000-2,500 free submissions/month** before the credit is used up and pay-as-you-go billing kicks in. This is an estimate for the user's go/no-go decision (DQ-2), not a guarantee.
+- **Paid tier** (`APP_MODE=paid_tier`, password-gated per FR-016/017): unlocks unlimited pay-as-you-go scaling beyond the free credit (no hard ceiling other than a billing budget the operator sets in Google Cloud Console — this budget/alert setup is a release/runbook task, not a design mechanism, per DQ-4). The password gate itself is also a natural cost-control lever: gating the whole app behind a shared password inherently limits audience size, which is exactly the intended use of `APP_MODE` per FR-016's rationale.
+- **Future alternative (not v1)**: self-hosted OpenTripPlanner2 (using free/open Toronto-region GTFS + GTFS-RT feeds) for the transit leg, paired with a traffic-aware driving provider (Google, TomTom, or Mapbox) for the driving leg only. This would reduce transit-call cost to near-zero but requires standing up and operating a GTFS-ingesting server (new infra, new maintenance burden — feed refresh jobs, agency onboarding, uptime) that is out of proportion to v1 scope. Documented here as the answer if free-tier cost becomes a real problem post-launch, not something to build now.
+
+---
+
+## 4. Algorithm: candidate generation, evaluation, ranking, fallback
+
+This is the core of FR-005 through FR-011. Designed in two phases specifically to keep both **cost** (provider calls) and **latency** (NFR-004) bounded, since evaluating live transit for every possible point along a route is neither affordable nor fast.
+
+### 4.1 Phase 0 — Inputs resolved, direct baseline computed
+1. Resolve `start`, `driverDestination`, `passengerDestination` to lat/lng (already done client-side via `/api/geocode` during input, or re-validated server-side — see section 5.1). Validate each against the service radius (FR-004, NFR-006 — pending DQ-1 on scope).
+2. Call provider Directions (driving, `departure_time=now`, traffic-aware) for `start -> driverDestination`. This yields:
+   - `directDriveTimeMinutes` (the FR-006b baseline, "no stop"),
+   - the route polyline, decoded into an ordered list of `{lat, lng, cumulativeDistanceMeters}` vertices.
+
+### 4.2 Phase 1 — Raw candidate generation (cheap, no extra provider calls)
+3. Determine sampling spacing dynamically:
+   ```
+   effectiveSpacingMeters = max(
+     CANDIDATE_SPACING_METERS,               // configured target spacing
+     routeLengthMeters / MAX_RAW_CANDIDATES_SAMPLED   // never exceed the sampled-point cap
+   )
+   ```
+4. Walk the polyline's cumulative distance and emit a candidate point every `effectiveSpacingMeters`, recording its **route order index** (used later for the FR-010 tie-break). Drop any candidate whose point falls outside `GEOGRAPHIC_RADIUS_KM` of `GEOGRAPHIC_CENTER` (edge case: a route between two in-radius points can briefly leave the circle depending on road geometry — implementation detail, not a business ambiguity, decided here).
+5. Result: an ordered list of up to `MAX_RAW_CANDIDATES_SAMPLED` raw candidate points, each with zero provider calls spent so far beyond the one direct-route call.
+
+### 4.3 Phase 2 — Batched detour evaluation (driving only, FR-006b, FR-007, FR-009 filter)
+6. Batch the raw candidates into groups of `DISTANCE_MATRIX_BATCH_SIZE` (default 25, matching the provider's per-call element limits). For each batch, issue two Distance Matrix calls in parallel:
+   - `origins=[start], destinations=[batch of candidates]` → `driveTimeToCandidateMinutes` per candidate (traffic-aware),
+   - `origins=[batch of candidates], destinations=[driverDestination]` → `driveTimeFromCandidateMinutes` per candidate (traffic-aware).
+7. For each candidate: `detourMinutes = (driveTimeToCandidateMinutes + driveTimeFromCandidateMinutes) - directDriveTimeMinutes` (FR-006b, exact formula per resolved OQ-1).
+8. Mark each candidate `qualifies = detourMinutes <= maxDetourMinutes` (the user-supplied FR-002 input) — this is the FR-009 filter, applied here but **not yet used to discard anything**, because the FR-011 fallback needs visibility into non-qualifying candidates too.
+
+This phase costs exactly `2 * ceil(rawCandidateCount / DISTANCE_MATRIX_BATCH_SIZE)` provider calls regardless of how many candidates there are (up to the sampling cap), which is the main lever for keeping cost and latency bounded on long routes.
+
+### 4.4 Phase 3 — Shortlist selection + transit evaluation (FR-006c/d/e, FR-008)
+9. Transit evaluation is the slowest and most expensive step per-candidate (one Directions transit-mode call each, cannot be batched the way Distance Matrix can, because each candidate needs a *different* `departure_time`). Bound it with `MAX_TRANSIT_EVALUATIONS_PER_REQUEST` (default 8):
+   - Take all `qualifies=true` candidates, up to the cap, ordered by ascending `detourMinutes`.
+   - If fewer than the cap qualify, fill remaining slots with the next-smallest-`detourMinutes` non-qualifying candidates. This guarantees the FR-011 fallback (smallest passenger total time overall) has a reasonable pool to search even when zero candidates qualify — without this, a zero-qualifying-candidate scenario would have no transit data to compute a fallback from.
+10. For each shortlisted candidate, call provider Directions (`mode=transit`, `departure_time = now + driveTimeToCandidateMinutes`, filtered by `TRANSIT_MODES_INCLUDED`) for `candidate -> passengerDestination`, in parallel (bounded by `PROVIDER_CONCURRENCY_LIMIT`).
+11. Parse the response's step breakdown into:
+    - `walkTimeMinutes` = sum of WALKING step durations,
+    - `waitTimeMinutes` = sum of (transit step's scheduled/live departure time − arrival time at that stop),
+    - `transitTimeMinutes` = sum of in-vehicle + transfer time,
+    - `passengerTotalTimeMinutes` = walk + wait + transit (FR-006e).
+12. `driverTotalTimeMinutes = driveTimeToCandidateMinutes + driveTimeFromCandidateMinutes` (FR-006f).
+13. If a shortlisted candidate has no viable transit itinerary at all (provider returns no route), mark it `noTransitAvailable = true` and exclude it from ranking/fallback consideration, but keep it available for the FR-012 "no viable option" check.
+
+### 4.5 Phase 4 — Ranking, tie-break, fallback (FR-010, FR-011, FR-012, FR-013)
+14. Among evaluated candidates with `qualifies=true` and `noTransitAvailable=false`:
+    - Sort ascending by `passengerTotalTimeMinutes`.
+    - Tie-break: candidate with the **lower route-order index** (earlier on the driver's route) ranks higher (FR-010, resolved OQ-2).
+    - Return the top `MAX_CANDIDATES_RETURNED` (default 3) with `status: "ranked"`.
+15. If step 14's qualifying set is empty:
+    - Among *all* evaluated candidates (qualifying or not) with `noTransitAvailable=false`, pick the single smallest `passengerTotalTimeMinutes` (FR-011, resolved OQ-3 — smallest passenger transit time, not smallest detour or distance).
+    - Return that one candidate with `status: "fallback"` and a warning that it exceeds the requested detour threshold (FR-011, displayed per FR-013/FR-014).
+16. If **no** evaluated candidate has a viable transit itinerary at all (every shortlisted candidate is `noTransitAvailable=true`), return `status: "no_viable_option"` with a clear message (FR-012), no candidates.
+
+**Provider call accounting per user submission** (used for the cost estimate in section 3 and the latency analysis in section 6): 3 geocodes (if not already client-resolved) + 1 direct route + up to `2 * ceil(MAX_RAW_CANDIDATES_SAMPLED / DISTANCE_MATRIX_BATCH_SIZE)` (default: 2, since 20 ≤ 25) + up to `MAX_TRANSIT_EVALUATIONS_PER_REQUEST` (default 8) = **~14 calls per submission** at default config.
+
+---
+
+## 5. Module boundaries and data contracts
+
+### 5.1 Backend modules (dependency-injected, no hidden globals — for testability)
+
+```ts
+// config/schema.ts
+interface AppConfig {
+  mapRoutingProvider: "google_maps_platform";
+  mapApiKey: string;                    // secret
+  geographicCenter: { lat: number; lng: number; label: string };
+  geographicRadiusKm: number;
+  maxCandidatesReturned: number;
+  appMode: "free_tier" | "paid_tier";
+  paidTierAccessPassword: string | null; // secret, required if appMode === "paid_tier"
+  responseTimeTargetSeconds: number;
+  transitModesIncluded: TransitMode[] | "all";
+  candidateSpacingMeters: number;
+  maxRawCandidatesSampled: number;
+  maxTransitEvaluationsPerRequest: number;
+  distanceMatrixBatchSize: number;
+  requestTimeoutMs: number;
+  providerConcurrencyLimit: number;
+}
+
+// geocodingService.ts
+interface GeocodingService {
+  resolve(query: string): Promise<GeoResult[]>;
+  reverseGeocode(point: LatLng): Promise<string>; // label only, for "use my location"
+}
+interface GeoResult { lat: number; lng: number; label: string; placeId?: string }
+
+// radiusValidator.ts
+interface RadiusValidator {
+  isWithinServiceArea(point: LatLng, config: AppConfig): boolean;
+}
+
+// routingService.ts
+interface RoutingService {
+  getDirectRoute(start: LatLng, dest: LatLng): Promise<{ durationMinutes: number; polyline: LatLng[] }>;
+}
+
+// candidateGenerator.ts
+interface CandidateGenerator {
+  sampleAlongPolyline(polyline: LatLng[], config: AppConfig): RawCandidate[];
+}
+interface RawCandidate { point: LatLng; routeOrderIndex: number }
+
+// detourEvaluator.ts
+interface DetourEvaluator {
+  batchEvaluate(
+    start: LatLng, dest: LatLng, directDriveTimeMinutes: number,
+    candidates: RawCandidate[], config: AppConfig
+  ): Promise<EvaluatedCandidate[]>;
+}
+interface EvaluatedCandidate extends RawCandidate {
+  driveTimeToCandidateMinutes: number;
+  driveTimeFromCandidateMinutes: number;
+  detourMinutes: number;
+  qualifies: boolean;
+}
+
+// shortlistSelector.ts
+interface ShortlistSelector {
+  select(evaluated: EvaluatedCandidate[], config: AppConfig): EvaluatedCandidate[];
+}
+
+// transitEvaluator.ts
+interface TransitEvaluator {
+  evaluate(
+    candidate: EvaluatedCandidate, passengerDestination: LatLng,
+    departureTime: Date, config: AppConfig
+  ): Promise<TransitResult>;
+}
+interface TransitResult {
+  walkTimeMinutes: number; waitTimeMinutes: number; transitTimeMinutes: number;
+  passengerTotalTimeMinutes: number; noTransitAvailable: boolean;
+}
+
+// ranker.ts
+interface Ranker {
+  rank(fullyEvaluated: FullyEvaluatedCandidate[], maxDetourMinutes: number, config: AppConfig): RankedResult;
+}
+type RankedResult =
+  | { status: "ranked"; results: FullyEvaluatedCandidate[] }
+  | { status: "fallback"; results: [FullyEvaluatedCandidate]; warning: string }
+  | { status: "no_viable_option" };
+
+// authMiddleware.ts
+interface AuthGate {
+  check(req: Request, config: AppConfig): boolean; // true = allowed through
+}
+```
+
+### 5.2 API endpoints
+
+- `GET /api/config/public` → non-secret config the frontend needs: `{ appMode, geographicCenter, geographicRadiusKm, maxCandidatesReturned, transitModesIncluded }`.
+- `POST /api/auth/verify-password` (only relevant when `appMode=paid_tier`) → body `{ password: string }`, sets a short-lived session cookie on success. Password compared with constant-time comparison. This cookie is an auth token only, not trip data — does not conflict with NFR-003.
+- `GET /api/geocode?query=...` → `{ results: GeoResult[] }`. Used for address autocomplete.
+- `POST /api/drop-off-search`:
+  ```ts
+  // Request
+  interface DropOffSearchRequest {
+    start: { lat: number; lng: number; label: string };
+    driverDestination: { lat: number; lng: number; label: string };
+    passengerDestination: { lat: number; lng: number; label: string };
+    maxDetourMinutes: number; // FR-002, user-entered, no server default
+  }
+
+  // Response
+  interface DropOffSearchResponse {
+    status: "ranked" | "fallback" | "no_viable_option" | "out_of_service_area" | "invalid_input";
+    candidates: Array<{
+      rank: number;
+      location: { lat: number; lng: number };
+      routeOrderIndex: number;
+      driveTimeToDropoffMinutes: number;
+      detourMinutes: number;
+      walkTimeMinutes: number;
+      waitTimeMinutes: number;
+      transitTimeMinutes: number;
+      passengerTotalTimeMinutes: number;
+      driverTotalTimeMinutes: number;
+      exceedsThreshold: boolean;
+    }>;
+    warning?: string;       // present when status === "fallback" (FR-011)
+    message?: string;       // present for out_of_service_area / no_viable_option / invalid_input (FR-004, FR-012, FR-003)
+    disclaimer: string;     // always present when candidates.length > 0 (FR-014)
+    requestId: string;
+    timingMs: number;       // for QA to verify NFR-004 empirically
+  }
+  ```
+
+Validation ordering inside `/api/drop-off-search` (fail fast, cheapest checks first, per FR-003/FR-004): (1) shape/type validation of the 4 inputs → `invalid_input`; (2) radius check on all locations in scope per DQ-1 → `out_of_service_area`; (3) proceed to section 4's algorithm.
+
+---
+
+## 6. NFR-004 latency feasibility analysis (5-second target)
+
+### 6.1 Critical path under the design above (typical case, default config)
+1. Geocoding (if needed) — 3 calls in parallel, ~0.2-0.4s.
+2. Direct route call — ~0.3-0.5s (needed before candidate sampling can start; sequential dependency).
+3. Batched Distance Matrix calls (2, in parallel) — ~0.5-0.9s.
+4. Transit evaluation fan-out — up to `MAX_TRANSIT_EVALUATIONS_PER_REQUEST` (default 8) calls in parallel, bounded by `PROVIDER_CONCURRENCY_LIMIT` — this is typically the slowest and most variable leg; transit itinerary computation with transfers tends to run 0.7-1.5s+ per call, and since these run in parallel the wall-clock cost is roughly the slowest straggler, not the sum — ~1.0-2.0s typical.
+
+**Typical-case total: roughly 2.5-4.0s.** Within the 5s target, but with limited margin.
+
+### 6.2 Why it is not a guarantee
+- Steps 2-4 are sequentially dependent (can't sample candidates before the direct route exists, can't shortlist for transit before detour is known), so their latencies add rather than fully overlap.
+- Transit Directions calls have the highest variance of any call in this design (multi-transfer itinerary search, live schedule lookups) — p95/p99 tail latency could push the fan-out step well past 2s.
+- NFR-007 explicitly defers rate-limiting/abuse protection, so there is no backstop if the provider throttles or slows under bursty public load — a slow/throttled response here directly threatens the 5s target with no mitigation beyond `APP_MODE` (which is a manual, not automatic, switch).
+
+### 6.3 Recommendation (flagged as DQ-3, needs user sign-off)
+- Treat 5 seconds as a **soft target for the typical/median request**, not a guaranteed ceiling.
+- Enforce a **hard per-call timeout** (`REQUEST_TIMEOUT_MS`, default 4000ms) on every individual provider call, and an overall backend orchestration timeout slightly under `RESPONSE_TIME_TARGET_SECONDS`.
+- On overall timeout, return a **graceful degraded response**: rank and return whatever candidates completed evaluation within budget (if any qualify or a fallback can be computed from partial data), rather than hanging indefinitely or erroring with nothing. If literally nothing completed in time, return a distinct timeout-specific message (extension of `status`, e.g., `"timeout"`) rather than silently retrying (retries would only worsen tail latency, and are explicitly not required by any FR/NFR).
+- This is presented to the user as DQ-3 for explicit acceptance, since NFR-004 itself requires escalation if the target can't be cleanly guaranteed.
+
+---
+
+## 7. Configuration schema
+
+All values below are configurable via environment variables (or equivalent config-file mechanism the release agent sets up), never hardcoded, per the project's non-negotiables. This table supersedes/expands the configuration table in `requirements.md` — every key from requirements is present, plus additional tunables this design introduces to satisfy FR-006/FR-009/FR-010/FR-011 within the NFR-004 latency budget.
+
+| Key | Type | Default | Secret? | Purpose / FR-NFR link |
+|---|---|---|---|---|
+| `MAP_ROUTING_PROVIDER` | enum | `google_maps_platform` | no | Which provider integration to use (section 3) |
+| `MAP_API_KEY` | string | none (required) | **yes** | Provider credential; server-side only, never sent to browser |
+| `GEOGRAPHIC_CENTER` | `{lat, lng, label}` | Toronto (43.6532, -79.3832, "Toronto, ON") | no | NFR-006 |
+| `GEOGRAPHIC_RADIUS_KM` | number | 200 | no | NFR-006, FR-004 |
+| `MAX_CANDIDATES_RETURNED` | integer | 3 | no | FR-010 |
+| `APP_MODE` | enum | `free_tier` | no | FR-016, FR-017 |
+| `PAID_TIER_ACCESS_PASSWORD` | string | none | **yes**, required if `APP_MODE=paid_tier` | FR-016, FR-017 |
+| `RESPONSE_TIME_TARGET_SECONDS` | number | 5 | no | NFR-004 (soft target, see section 6) |
+| `TRANSIT_MODES_INCLUDED` | enum list or `"all"` | `all` | no | FR-006d, transit query filter |
+| `CANDIDATE_SPACING_METERS` | number | 1000 | no | Target spacing between raw sampled candidates (section 4.2) |
+| `MAX_RAW_CANDIDATES_SAMPLED` | integer | 20 | no | Caps raw candidate count regardless of route length (cost + latency control) |
+| `MAX_TRANSIT_EVALUATIONS_PER_REQUEST` | integer | 8 | no | Caps the most expensive/slowest per-candidate calls (section 4.4) |
+| `DISTANCE_MATRIX_BATCH_SIZE` | integer | 25 | no | Provider-imposed batch limit for Distance Matrix calls |
+| `REQUEST_TIMEOUT_MS` | integer | 4000 | no | Per-external-call hard timeout (section 6.3) |
+| `PROVIDER_CONCURRENCY_LIMIT` | integer | 10 | no | Max simultaneous outbound provider calls per user request, to respect provider QPS limits while still parallelizing (section 6) |
+
+`MAX_DETOUR_THRESHOLD_INPUT` is intentionally **not** in this table — confirmed in requirements as user-entered per session, no config default.
+
+---
+
+## 8. Frontend contract (functional, not visual — visual/UX detail belongs to designer's ux-spec.md)
+
+Required states the UI must be able to render, driven directly by `DropOffSearchResponse.status`:
+- `ranked` — up to `maxCandidatesReturned` result cards, each showing the full FR-013 breakdown.
+- `fallback` — single result card + visible warning banner (FR-011, FR-013).
+- `no_viable_option` — message, no cards (FR-012).
+- `out_of_service_area` — message referencing the configured radius, no computation attempted (FR-004).
+- `invalid_input` — field-level error messaging (FR-003).
+- `timeout` (see section 6.3) — message distinct from the above, inviting retry.
+- Persistent disclaimer (FR-014) rendered whenever `candidates.length > 0`, regardless of status.
+- Password-gate screen when `appMode === "paid_tier"` and no valid session cookie exists yet (FR-016/017).
+- Three location inputs each supporting typed-address-with-autocomplete and "use my current location" (FR-015), on mobile-responsive layout (NFR-001).
+
+---
+
+## 9. Assumptions and known limitations (not blocking, documented for traceability)
+
+- Radius edge case for candidates briefly outside the service circle on a route between two in-radius points: resolved as "exclude that candidate point" (section 4.2, step 4) — an implementation detail, not a business ambiguity.
+- Live transit data quality/coverage will vary at the edges of the 200km radius (smaller regional agencies with weaker GTFS-RT feeds) — this is idea-brief risk #3, inherent to the chosen provider's data sources, not something this design can fully resolve; no action taken beyond documenting it.
+- Safety/legality of a candidate drop-off point (idea-brief risk #1) is out of scope for v1 per requirements; addressed only via the FR-014 disclaimer.
+- Operational log retention for request-scoped coordinate data (NFR-003 adjacent) — flagged to release for `docs/runbook.md`, not a design mechanism itself.
+
+---
+
+## 10. Increment plan (INC-1..8)
+
+Prerequisite (not a numbered increment, owned by release per pipeline): **CI/CD pipeline + hosting + `docs/runbook.md` established before INC-1 begins**, since this app is public-facing (NFR-005). Includes: chosen hosting platform, environment-variable injection mechanism for section 7's config, HTTPS, and the billing-alert/cost-ceiling ops concern from DQ-4.
+
+Each increment below is independently testable by QA and does not depend on anything not yet built in an earlier increment.
+
+### INC-1: Project scaffolding, config loader, auth gate, app shell
+- Backend skeleton (stateless server), `AppConfig` loader/validator (fails fast on missing `MAP_API_KEY`, or missing `PAID_TIER_ACCESS_PASSWORD` when `APP_MODE=paid_tier`).
+- `AuthGate` middleware implementing FR-016/FR-017's binary app-wide gate; `/api/auth/verify-password` endpoint.
+- `GET /api/config/public` endpoint.
+- Frontend app shell: mobile-responsive layout skeleton, three location-input fields and detour-minutes field present (not yet wired to real geocoding), password-gate screen wired to the auth endpoint.
+- **Covers**: FR-016, FR-017, NFR-002, config keys `APP_MODE`/`PAID_TIER_ACCESS_PASSWORD`/`MAP_API_KEY`, partial NFR-001.
+- **QA can test**: config validation failure modes, password gate blocks/allows correctly in both modes, app renders on mobile viewports, no persistence layer exists anywhere (NFR-003 spot check).
+
+### INC-2: Location input, geocoding, radius validation
+- `GeocodingService`, `/api/geocode` endpoint, "use my current location" (browser geolocation + reverse-geocode label).
+- `RadiusValidator` + `out_of_service_area` response path (FR-004 — **pending DQ-1 resolution on scope**, build against whichever scope is confirmed by Gate 3).
+- Invalid-address error handling (FR-003).
+- **Covers**: FR-001, FR-003, FR-004, FR-015, NFR-006, config keys `GEOGRAPHIC_CENTER`/`GEOGRAPHIC_RADIUS_KM`.
+- **QA can test**: valid/invalid addresses, current-location flow, in-radius/out-of-radius combinations for all three input fields per the confirmed DQ-1 scope, all without any driving/transit computation yet.
+
+### INC-3: Direct driving route + detour threshold input
+- `RoutingService.getDirectRoute` (live traffic), `maxDetourMinutes` input field (FR-002) with numeric/positive validation.
+- Expose direct drive time (dev/QA-visible, not yet the final feature) to validate live-traffic integration end to end.
+- **Covers**: FR-002, FR-006a, part of FR-006b (baseline), FR-007.
+- **QA can test**: live traffic is reflected (e.g., comparing times at different times of day, or against the provider's own consumer app), detour-minutes field validation.
+
+### INC-4: Candidate generation + batched detour evaluation
+- `CandidateGenerator.sampleAlongPolyline`, `DetourEvaluator.batchEvaluate` (Distance Matrix batching), `qualifies` flag computation.
+- Expose raw candidate list with detour times via an internal/debug view for QA inspection (transit not yet computed).
+- **Covers**: FR-005, full FR-006b, FR-009 (filter flag only, not yet applied to final ranking), config keys `CANDIDATE_SPACING_METERS`/`MAX_RAW_CANDIDATES_SAMPLED`/`DISTANCE_MATRIX_BATCH_SIZE`.
+- **QA can test**: correct candidate count/spacing given route length, correct detour math against the FR-006b formula, batch size respected.
+
+### INC-5: Transit evaluation
+- `ShortlistSelector`, `TransitEvaluator.evaluate` (departure-time-aware transit Directions calls), walk/wait/transit/transfer parsing, `TRANSIT_MODES_INCLUDED` filtering.
+- **Covers**: FR-006c, FR-006d, FR-006e, FR-008, config keys `MAX_TRANSIT_EVALUATIONS_PER_REQUEST`/`TRANSIT_MODES_INCLUDED`.
+- **QA can test**: transit legs computed correctly, live-schedule departure-time honored (spot check against provider's own live data), transit-mode filter honored, evaluation cap respected.
+
+### INC-6: Ranking, tie-break, fallback, full results output
+- `Ranker.rank` implementing FR-010's sort + tie-break, FR-011's fallback, FR-012's no-viable-option path; full `DropOffSearchResponse` wiring; frontend results cards for `ranked`/`fallback`/`no_viable_option` states (FR-013).
+- **Covers**: FR-006f, FR-010, FR-011, FR-012, FR-013, config key `MAX_CANDIDATES_RETURNED`.
+- **QA can test**: all three response-status scenarios reproducible with controlled/mocked provider responses (normal ranked case, fallback-with-warning case, zero-viable-option case), tie-break behavior with contrived equal-time candidates.
+
+### INC-7: Disclaimer, latency hardening, timeout handling
+- Persistent FR-014 disclaimer on all candidate-bearing responses; per-call `REQUEST_TIMEOUT_MS`, `PROVIDER_CONCURRENCY_LIMIT` tuning, overall orchestration timeout, `timeout` status path (section 6.3).
+- Timing instrumentation (`timingMs` in response) for QA to empirically validate NFR-004.
+- **Covers**: FR-014, NFR-004 (validated, not just designed), config keys `RESPONSE_TIME_TARGET_SECONDS`/`REQUEST_TIMEOUT_MS`/`PROVIDER_CONCURRENCY_LIMIT`.
+- **QA can test**: disclaimer visible on `ranked`/`fallback` states, latency measurements against target under realistic/staging conditions, graceful behavior when an artificial slow-provider-response is simulated.
+
+### INC-8: Paid-tier hardening, full mobile polish, cross-cutting error handling
+- End-to-end paid-tier UX (password entry, session cookie, re-auth behavior), full mobile responsiveness pass across all screens/states, remaining error-state polish (network failures, malformed provider responses), final NFR-006 edge cases, final NFR-003 persistence audit across the whole app.
+- **Covers**: remainder of NFR-001, NFR-002, FR-016/FR-017 (full end-to-end), NFR-006 edge cases, NFR-003 closure check.
+- **QA can test**: full mobile device pass across breakpoints, full paid-tier auth flow including session expiry, full regression pass.
+
+### Traceability summary
+- FR-001 → INC-2. FR-002 → INC-3. FR-003 → INC-2. FR-004 → INC-2 (pending DQ-1). FR-005 → INC-4. FR-006(a-f) → INC-3/4/5/6. FR-007 → INC-3. FR-008 → INC-5. FR-009 → INC-4/6. FR-010 → INC-6. FR-011 → INC-6. FR-012 → INC-6. FR-013 → INC-6. FR-014 → INC-7. FR-015 → INC-2. FR-016/FR-017 → INC-1/INC-8.
+- NFR-001 → INC-1/INC-8. NFR-002 → INC-1. NFR-003 → cross-cutting, checked at INC-1 and closed at INC-8. NFR-004 → designed in section 6, validated at INC-7. NFR-005 → release prerequisite, before INC-1. NFR-006 → INC-2/INC-8. NFR-007 → accepted risk, no increment (explicitly out of scope per requirements).
+
+No FR/NFR is currently without design coverage, contingent on DQ-1 through DQ-3 being resolved (they affect *how* certain increments are built, not *whether* they're covered).
+
+---
+
+## 11. Changelog
+
+| Date | Change | Reason |
+|---|---|---|
+| 2026-07-10 | Initial design drafted from FINAL requirements.md and approved idea-brief.md; provider recommendation (Google Maps Platform), two-phase candidate/detour/transit evaluation algorithm, config schema, 8-increment plan; DQ-1 through DQ-4 raised for pm/user resolution before Gate 3 | Phase 2 kickoff following Gate 2 approval |
