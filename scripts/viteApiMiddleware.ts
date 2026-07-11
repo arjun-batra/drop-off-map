@@ -20,6 +20,7 @@ const ROUTES: Record<string, () => Promise<HandlerModule>> = {
   "/geocode": () => import("../api/geocode.js"),
   "/route/direct": () => import("../api/route/direct.js"),
   "/candidates/evaluate": () => import("../api/candidates/evaluate.js"),
+  "/candidates/transit": () => import("../api/candidates/transit.js"),
 };
 
 function readRequestBody(req: IncomingMessage): Promise<string> {
