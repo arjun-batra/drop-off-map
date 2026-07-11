@@ -19,6 +19,7 @@ const ROUTES: Record<string, () => Promise<HandlerModule>> = {
   "/auth/verify-password": () => import("../api/auth/verify-password.js"),
   "/geocode": () => import("../api/geocode.js"),
   "/route/direct": () => import("../api/route/direct.js"),
+  "/candidates/evaluate": () => import("../api/candidates/evaluate.js"),
 };
 
 function readRequestBody(req: IncomingMessage): Promise<string> {
