@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { PublicConfig } from "../../config/schema";
 import type { DropOffSearchRequest, DropOffSearchResponse } from "../../search/types";
 import { searchDropOffPoints } from "../api";
@@ -34,11 +34,26 @@ export function SearchFlow({ config }: SearchFlowProps) {
   const [stage, setStage] = useState<Stage>({ kind: "input" });
   const [lastRequest, setLastRequest] = useState<DropOffSearchRequest | null>(null);
 
+  // Guards against a stale/superseded search's promise resolving after the
+  // user has cancelled or started a newer search: only the request whose
+  // token still matches `currentSearchToken` when it resolves is allowed to
+  // update `stage`. Incrementing the token on both cancel and on starting a
+  // new search covers the cancel-then-resolve case and the
+  // resolve-out-of-order (older search resolves after a newer one) case with
+  // the same mechanism (BUG-001).
+  const currentSearchToken = useRef(0);
+
   async function runSearch(request: DropOffSearchRequest) {
+    const token = ++currentSearchToken.current;
+
     setLastRequest(request);
     setStage({ kind: "loading", request });
 
     const outcome = await searchDropOffPoints(request);
+
+    if (token !== currentSearchToken.current) {
+      return;
+    }
 
     if (!outcome.ok || !outcome.response) {
       setStage({ kind: "error", request });
@@ -48,8 +63,13 @@ export function SearchFlow({ config }: SearchFlowProps) {
     setStage({ kind: "results", request, response: outcome.response });
   }
 
+  function cancelSearch() {
+    currentSearchToken.current += 1;
+    setStage({ kind: "input" });
+  }
+
   if (stage.kind === "loading") {
-    return <LoadingScreen onCancel={() => setStage({ kind: "input" })} />;
+    return <LoadingScreen onCancel={cancelSearch} />;
   }
 
   if (stage.kind === "results") {
