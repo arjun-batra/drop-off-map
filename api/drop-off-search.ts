@@ -12,6 +12,7 @@ import { Ranker } from "../src/ranking/ranker";
 import { RoutingProviderError } from "../src/routing/errors";
 import { createGoogleDistanceMatrixService } from "../src/routing/googleDistanceMatrixService";
 import { createGoogleRoutingService } from "../src/routing/googleRoutingService";
+import { DISCLAIMER_TEXT } from "../src/search/types";
 import type { DropOffSearchCandidate, DropOffSearchLocation, DropOffSearchRequest } from "../src/search/types";
 import { evaluateShortlist } from "../src/transit/evaluateShortlist";
 import { createGoogleTransitService } from "../src/transit/googleTransitDirectionsService";
@@ -134,11 +135,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     return;
   }
 
-  const routingService = createGoogleRoutingService({ apiKey: config.mapApiKey });
-  const distanceMatrixService = createGoogleDistanceMatrixService({ apiKey: config.mapApiKey });
+  const routingService = createGoogleRoutingService({ apiKey: config.mapApiKey, timeoutMs: config.requestTimeoutMs });
+  const distanceMatrixService = createGoogleDistanceMatrixService({
+    apiKey: config.mapApiKey,
+    timeoutMs: config.requestTimeoutMs,
+  });
   const detourEvaluator = createDetourEvaluator(distanceMatrixService);
-  const transitEvaluator = createGoogleTransitService({ apiKey: config.mapApiKey });
-  const geocodingService = createGoogleGeocodingService({ apiKey: config.mapApiKey });
+  const transitEvaluator = createGoogleTransitService({ apiKey: config.mapApiKey, timeoutMs: config.requestTimeoutMs });
+  const geocodingService = createGoogleGeocodingService({ apiKey: config.mapApiKey, timeoutMs: config.requestTimeoutMs });
+
+  // design.md section 6.3 (NFR-004/INC-7): an overall orchestration deadline
+  // for the whole request, so a slow/throttled provider can't hold the
+  // response open indefinitely even though every individual call is already
+  // bounded by REQUEST_TIMEOUT_MS. No separate "safety margin" config key
+  // exists in design.md section 7 -- using RESPONSE_TIME_TARGET_SECONDS
+  // itself as the deadline is the most literal reading of section 6.3's
+  // "slightly under RESPONSE_TIME_TARGET_SECONDS" without inventing an
+  // unaudited extra tunable; flagged in docs/handoff.md for tech-lead to
+  // confirm/introduce an explicit margin key if a stricter reading is wanted.
+  const orchestrationDeadline = new Date(requestStart + config.responseTimeTargetSeconds * 1000);
 
   try {
     const directRoute = await routingService.getDirectRoute(start, driverDestination);
@@ -152,11 +167,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       config,
     );
     const shortlist = ShortlistSelector.select(evaluatedCandidates, config);
-    const fullyEvaluated = await evaluateShortlist(transitEvaluator, shortlist, passengerDestination, config);
+
+    let skippedDueToTimeout = 0;
+    const fullyEvaluated = await evaluateShortlist(transitEvaluator, shortlist, passengerDestination, config, {
+      deadline: orchestrationDeadline,
+      onSkippedDueToDeadline: () => {
+        skippedDueToTimeout++;
+      },
+    });
 
     const ranked = Ranker.rank(fullyEvaluated, maxDetourMinutes, config);
 
     if (ranked.status === "no_viable_option") {
+      // design.md section 6.3: if the orchestration deadline was exceeded
+      // before ANY shortlisted candidate's transit call could even start,
+      // this is a graceful timeout, not a genuine "nothing is reachable"
+      // business outcome -- report it distinctly so the frontend can invite
+      // a retry (design.md section 8) instead of implying the trip has no
+      // viable drop-off point at all.
+      if (shortlist.length > 0 && skippedDueToTimeout === shortlist.length) {
+        res.status(200).json({
+          status: "timeout",
+          candidates: [],
+          message: "This is taking longer than expected. Please try again in a moment.",
+          requestId,
+          timingMs: Date.now() - requestStart,
+        });
+        return;
+      }
+
       res.status(200).json({
         status: "no_viable_option",
         candidates: [],
@@ -193,6 +232,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         status: "fallback",
         candidates,
         warning: ranked.warning,
+        // FR-014/INC-7: present whenever candidates.length > 0, per
+        // design.md section 5.2's documented contract. Resolves REV-012.
+        disclaimer: DISCLAIMER_TEXT,
         requestId,
         timingMs: Date.now() - requestStart,
       });
@@ -202,6 +244,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     res.status(200).json({
       status: "ranked",
       candidates,
+      disclaimer: DISCLAIMER_TEXT,
       requestId,
       timingMs: Date.now() - requestStart,
     });

@@ -1,10 +1,11 @@
 import type { LatLng } from "../geo/types";
+import { fetchWithTimeout, ProviderTimeoutError, type TimeoutAwareFetch } from "../http/fetchWithTimeout";
 import { RoutingProviderError } from "../routing/errors";
 import type { TransitEvaluationConfig, TransitEvaluator, TransitResult } from "./types";
 
 const GOOGLE_TRANSIT_DIRECTIONS_ENDPOINT = "https://maps.googleapis.com/maps/api/directions/json";
 
-type FetchLike = (url: string) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
+type FetchLike = TimeoutAwareFetch;
 
 interface GoogleTransitStep {
   travel_mode: string; // "WALKING" | "TRANSIT" (Google's transit-mode routes only ever contain these two)
@@ -36,6 +37,16 @@ export interface GoogleTransitServiceOptions {
   fetchImpl?: FetchLike;
   /** Injectable so tests don't hit the real Google endpoint. */
   endpoint?: string;
+  /**
+   * design.md section 6.3/7's REQUEST_TIMEOUT_MS -- hard per-call timeout
+   * (INC-7/NFR-004). Optional so existing unit tests that construct this
+   * service without a timeout keep working unmodified (see
+   * src/http/fetchWithTimeout.ts); every production caller always supplies
+   * `config.requestTimeoutMs`. Transit calls are the slowest/most variable
+   * leg per design.md section 6.1 -- this is the single most important call
+   * site for this timeout to actually bind.
+   */
+  timeoutMs?: number;
 }
 
 const NO_TRANSIT_RESULT: TransitResult = {
@@ -152,7 +163,7 @@ export function parseTransitRoute(
  * never reaches the browser.
  */
 export function createGoogleTransitService(options: GoogleTransitServiceOptions): TransitEvaluator {
-  const fetchImpl = options.fetchImpl ?? ((url: string) => fetch(url));
+  const fetchImpl = options.fetchImpl ?? ((url: string, init?: { signal?: AbortSignal }) => fetch(url, init));
   const endpoint = options.endpoint ?? GOOGLE_TRANSIT_DIRECTIONS_ENDPOINT;
 
   return {
@@ -176,8 +187,11 @@ export function createGoogleTransitService(options: GoogleTransitServiceOptions)
 
       let res: { ok: boolean; status: number; json: () => Promise<unknown> };
       try {
-        res = await fetchImpl(url.toString());
+        res = await fetchWithTimeout(fetchImpl, url.toString(), options.timeoutMs);
       } catch (err) {
+        if (err instanceof ProviderTimeoutError) {
+          throw new RoutingProviderError("TIMEOUT", err.message);
+        }
         throw new RoutingProviderError("NETWORK_ERROR", err instanceof Error ? err.message : "Network request failed.");
       }
 

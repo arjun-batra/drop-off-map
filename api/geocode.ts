@@ -46,7 +46,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   const lat = firstQueryValue(req.query.lat);
   const lng = firstQueryValue(req.query.lng);
 
-  const geocodingService = createGoogleGeocodingService({ apiKey: config.mapApiKey });
+  const geocodingService = createGoogleGeocodingService({ apiKey: config.mapApiKey, timeoutMs: config.requestTimeoutMs });
 
   try {
     if (query !== undefined) {

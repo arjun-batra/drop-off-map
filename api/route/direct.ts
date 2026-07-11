@@ -62,7 +62,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     return;
   }
 
-  const routingService = createGoogleRoutingService({ apiKey: config.mapApiKey });
+  const routingService = createGoogleRoutingService({ apiKey: config.mapApiKey, timeoutMs: config.requestTimeoutMs });
 
   try {
     const route = await routingService.getDirectRoute(

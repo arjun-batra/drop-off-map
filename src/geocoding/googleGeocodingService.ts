@@ -1,10 +1,11 @@
 import type { LatLng } from "../geo/types";
+import { fetchWithTimeout, ProviderTimeoutError, type TimeoutAwareFetch } from "../http/fetchWithTimeout";
 import { GeocodingProviderError } from "./errors";
 import type { GeocodingService, GeoResult } from "./types";
 
 const GOOGLE_GEOCODE_ENDPOINT = "https://maps.googleapis.com/maps/api/geocode/json";
 
-type FetchLike = (url: string) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
+type FetchLike = TimeoutAwareFetch;
 
 interface GoogleGeocodeResponseResult {
   formatted_address: string;
@@ -25,6 +26,14 @@ export interface GoogleGeocodingServiceOptions {
   fetchImpl?: FetchLike;
   /** Injectable so tests don't hit the real Google endpoint. */
   endpoint?: string;
+  /**
+   * design.md section 6.3/7's REQUEST_TIMEOUT_MS -- hard per-call timeout
+   * (INC-7/NFR-004). Optional so existing unit tests that construct this
+   * service without a timeout keep working unmodified (see
+   * fetchWithTimeout.ts); every production caller (api/geocode.ts,
+   * api/drop-off-search.ts) always supplies `config.requestTimeoutMs`.
+   */
+  timeoutMs?: number;
 }
 
 function isGoogleGeocodeResponse(body: unknown): body is GoogleGeocodeResponse {
@@ -35,6 +44,7 @@ async function callGoogleGeocodeApi(
   fetchImpl: FetchLike,
   endpoint: string,
   params: Record<string, string>,
+  timeoutMs: number | undefined,
 ): Promise<GoogleGeocodeResponse> {
   const url = new URL(endpoint);
   for (const [key, value] of Object.entries(params)) {
@@ -43,8 +53,11 @@ async function callGoogleGeocodeApi(
 
   let res: { ok: boolean; status: number; json: () => Promise<unknown> };
   try {
-    res = await fetchImpl(url.toString());
+    res = await fetchWithTimeout(fetchImpl, url.toString(), timeoutMs);
   } catch (err) {
+    if (err instanceof ProviderTimeoutError) {
+      throw new GeocodingProviderError("TIMEOUT", err.message);
+    }
     throw new GeocodingProviderError("NETWORK_ERROR", err instanceof Error ? err.message : "Network request failed.");
   }
 
@@ -80,7 +93,7 @@ function toGeoResult(result: GoogleGeocodeResponseResult): GeoResult {
  * never reach the browser.
  */
 export function createGoogleGeocodingService(options: GoogleGeocodingServiceOptions): GeocodingService {
-  const fetchImpl = options.fetchImpl ?? ((url: string) => fetch(url));
+  const fetchImpl = options.fetchImpl ?? ((url: string, init?: { signal?: AbortSignal }) => fetch(url, init));
   const endpoint = options.endpoint ?? GOOGLE_GEOCODE_ENDPOINT;
 
   return {
@@ -88,20 +101,24 @@ export function createGoogleGeocodingService(options: GoogleGeocodingServiceOpti
       const trimmed = query.trim();
       if (trimmed === "") return [];
 
-      const body = await callGoogleGeocodeApi(fetchImpl, endpoint, {
-        address: trimmed,
-        key: options.apiKey,
-      });
+      const body = await callGoogleGeocodeApi(
+        fetchImpl,
+        endpoint,
+        { address: trimmed, key: options.apiKey },
+        options.timeoutMs,
+      );
 
       if (body.status === "ZERO_RESULTS") return [];
       return body.results.map(toGeoResult);
     },
 
     async reverseGeocode(point: LatLng): Promise<string> {
-      const body = await callGoogleGeocodeApi(fetchImpl, endpoint, {
-        latlng: `${point.lat},${point.lng}`,
-        key: options.apiKey,
-      });
+      const body = await callGoogleGeocodeApi(
+        fetchImpl,
+        endpoint,
+        { latlng: `${point.lat},${point.lng}`, key: options.apiKey },
+        options.timeoutMs,
+      );
 
       const [first] = body.results;
       if (body.status === "ZERO_RESULTS" || !first) {

@@ -1,11 +1,12 @@
 import type { LatLng } from "../geo/types";
+import { fetchWithTimeout, ProviderTimeoutError, type TimeoutAwareFetch } from "../http/fetchWithTimeout";
 import { decodePolyline } from "./polyline";
 import { RoutingProviderError } from "./errors";
 import type { DirectRouteResult, RoutingService } from "./types";
 
 const GOOGLE_DIRECTIONS_ENDPOINT = "https://maps.googleapis.com/maps/api/directions/json";
 
-type FetchLike = (url: string) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
+type FetchLike = TimeoutAwareFetch;
 
 interface GoogleDirectionsLeg {
   duration: { value: number };
@@ -32,6 +33,15 @@ export interface GoogleRoutingServiceOptions {
   endpoint?: string;
   /** Injectable clock, purely for deterministic tests of the departure_time=now parameter. */
   now?: () => Date;
+  /**
+   * design.md section 6.3/7's REQUEST_TIMEOUT_MS -- hard per-call timeout
+   * (INC-7/NFR-004). Optional so existing unit tests that construct this
+   * service without a timeout keep working unmodified (see
+   * src/http/fetchWithTimeout.ts); every production caller (api/route/direct.ts,
+   * api/candidates/evaluate.ts, api/candidates/transit.ts, api/drop-off-search.ts)
+   * always supplies `config.requestTimeoutMs`.
+   */
+  timeoutMs?: number;
 }
 
 function isGoogleDirectionsResponse(body: unknown): body is GoogleDirectionsResponse {
@@ -52,7 +62,7 @@ function formatLatLng(point: LatLng): string {
  * reach the browser.
  */
 export function createGoogleRoutingService(options: GoogleRoutingServiceOptions): RoutingService {
-  const fetchImpl = options.fetchImpl ?? ((url: string) => fetch(url));
+  const fetchImpl = options.fetchImpl ?? ((url: string, init?: { signal?: AbortSignal }) => fetch(url, init));
   const endpoint = options.endpoint ?? GOOGLE_DIRECTIONS_ENDPOINT;
   const now = options.now ?? (() => new Date());
 
@@ -71,8 +81,11 @@ export function createGoogleRoutingService(options: GoogleRoutingServiceOptions)
 
       let res: { ok: boolean; status: number; json: () => Promise<unknown> };
       try {
-        res = await fetchImpl(url.toString());
+        res = await fetchWithTimeout(fetchImpl, url.toString(), options.timeoutMs);
       } catch (err) {
+        if (err instanceof ProviderTimeoutError) {
+          throw new RoutingProviderError("TIMEOUT", err.message);
+        }
         throw new RoutingProviderError("NETWORK_ERROR", err instanceof Error ? err.message : "Network request failed.");
       }
 

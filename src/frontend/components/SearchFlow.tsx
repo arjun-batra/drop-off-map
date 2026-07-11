@@ -2,6 +2,8 @@ import { useRef, useState } from "react";
 import type { PublicConfig } from "../../config/schema";
 import type { DropOffSearchRequest, DropOffSearchResponse } from "../../search/types";
 import { searchDropOffPoints } from "../api";
+import { DisclaimerBanner } from "./DisclaimerBanner";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { InputScreen } from "./InputScreen";
 import { LoadingScreen } from "./LoadingScreen";
 import { ResultsScreen } from "./ResultsScreen";
@@ -29,6 +31,15 @@ type Stage =
  * "Edit search" (sections 6.3/7) reopen the Input Screen seeded with the
  * last-submitted values (in-memory only, per NFR-003 -- nothing here is
  * persisted across a reload or a new visit).
+ *
+ * INC-7/REV-012: the "results" branch renders `<DisclaimerBanner>` as a
+ * sibling *outside* an `<ErrorBoundary>` that wraps `<ResultsScreen>`, so the
+ * FR-014 disclaimer stays visible even if a bug/malformed response data
+ * crashes ResultsScreen's own rendering. `<LoadingScreen>` is given
+ * `config.responseTimeTargetSeconds` so its "Still working..." copy swap
+ * (ux-spec.md section 5) is driven by the same tunable the backend's
+ * orchestration deadline uses (api/drop-off-search.ts), not a second
+ * independently-guessed threshold.
  */
 export function SearchFlow({ config }: SearchFlowProps) {
   const [stage, setStage] = useState<Stage>({ kind: "input" });
@@ -69,16 +80,29 @@ export function SearchFlow({ config }: SearchFlowProps) {
   }
 
   if (stage.kind === "loading") {
-    return <LoadingScreen onCancel={cancelSearch} />;
+    return <LoadingScreen onCancel={cancelSearch} responseTimeTargetSeconds={config.responseTimeTargetSeconds} />;
   }
 
   if (stage.kind === "results") {
+    // FR-014/REV-012: the disclaimer is present exactly when the response
+    // carries candidates (design.md section 5.2 -- "ranked"/"fallback").
+    // Rendered as a sibling *outside* the ErrorBoundary wrapping
+    // ResultsScreen (not inside it) so a render crash anywhere in
+    // ResultsScreen's data-dependent rendering can never take the
+    // disclaimer down with it -- see DisclaimerBanner.tsx/ErrorBoundary.tsx.
+    const showDisclaimer = stage.response.status === "ranked" || stage.response.status === "fallback";
     return (
-      <ResultsScreen
-        response={stage.response}
-        request={stage.request}
-        onEditSearch={() => setStage({ kind: "input" })}
-      />
+      <>
+        {showDisclaimer && <DisclaimerBanner />}
+        <ErrorBoundary fallback={<ResultsRenderFailed onEditSearch={() => setStage({ kind: "input" })} />}>
+          <ResultsScreen
+            response={stage.response}
+            request={stage.request}
+            onEditSearch={() => setStage({ kind: "input" })}
+            onTryAgain={() => runSearch(stage.request)}
+          />
+        </ErrorBoundary>
+      </>
     );
   }
 
@@ -106,5 +130,30 @@ export function SearchFlow({ config }: SearchFlowProps) {
       }
       onSubmit={runSearch}
     />
+  );
+}
+
+interface ResultsRenderFailedProps {
+  onEditSearch: () => void;
+}
+
+/**
+ * ErrorBoundary's fallback for a render crash inside ResultsScreen. Kept
+ * deliberately minimal/static (no response/candidate data touched here
+ * either) -- its only job is to give the user a way out (back to the Input
+ * screen) while the DisclaimerBanner sibling above it (see the "results"
+ * branch above) is still visibly present and unaffected.
+ */
+function ResultsRenderFailed({ onEditSearch }: ResultsRenderFailedProps) {
+  return (
+    <div className="app-shell">
+      <div className="app-shell__container" style={{ textAlign: "center", paddingTop: "3rem" }}>
+        <h2 className="type-h2">Something went wrong showing your results</h2>
+        <p className="type-body">Please edit your search and try again.</p>
+        <button type="button" className="type-body-strong" onClick={onEditSearch}>
+          ← Edit search
+        </button>
+      </div>
+    </div>
   );
 }

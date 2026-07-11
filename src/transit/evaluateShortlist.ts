@@ -11,7 +11,40 @@ export type ShortlistTransitEvaluationConfig = Pick<
 export interface EvaluateShortlistOptions {
   /** Injectable clock, purely for deterministic tests of the departure-time computation below. */
   now?: () => Date;
+  /**
+   * design.md section 6.3 (NFR-004/INC-7): an overall per-request deadline.
+   * Once this instant has passed, the worker pool stops *dispatching new*
+   * transit-evaluation calls and reports any not-yet-started candidate as
+   * `noTransitAvailable: true` -- a graceful degraded result (whatever
+   * candidates already completed are still returned and can still rank/
+   * fallback normally) rather than blocking the whole request until every
+   * candidate's transit call resolves. Already-in-flight calls are not
+   * aborted here (each one is already bounded by its own
+   * `REQUEST_TIMEOUT_MS`, see googleTransitDirectionsService.ts), so the
+   * worst-case overrun past `deadline` is one more per-call timeout, not an
+   * unbounded hang. Optional -- omitted entirely by every existing caller/
+   * test that doesn't care about the orchestration-level deadline.
+   */
+  deadline?: Date;
+  /**
+   * Invoked once per candidate skipped specifically because `deadline` had
+   * already passed when its turn came up -- lets the caller (api/drop-off-
+   * search.ts) distinguish "we ran out of time before checking" (design.md
+   * section 6.3's graceful-timeout path) from "no candidate had viable
+   * transit" (a genuine FR-012 business outcome), without changing this
+   * function's return shape (still a plain FullyEvaluatedCandidate[], so
+   * every existing caller/test is unaffected).
+   */
+  onSkippedDueToDeadline?: () => void;
 }
+
+const DEADLINE_SKIPPED_RESULT = {
+  walkTimeMinutes: 0,
+  waitTimeMinutes: 0,
+  transitTimeMinutes: 0,
+  passengerTotalTimeMinutes: 0,
+  noTransitAvailable: true as const,
+};
 
 /**
  * Orchestrates design.md section 4.4 steps 10-13 across the bounded
@@ -48,6 +81,7 @@ export async function evaluateShortlist(
 ): Promise<FullyEvaluatedCandidate[]> {
   const now = options.now ?? (() => new Date());
   const requestNow = now();
+  const { deadline, onSkippedDueToDeadline } = options;
   const results: FullyEvaluatedCandidate[] = new Array(shortlist.length);
 
   let nextIndex = 0;
@@ -58,14 +92,13 @@ export async function evaluateShortlist(
       const candidate = shortlist[i]!;
 
       if (!Number.isFinite(candidate.driveTimeToCandidateMinutes)) {
-        results[i] = {
-          ...candidate,
-          walkTimeMinutes: 0,
-          waitTimeMinutes: 0,
-          transitTimeMinutes: 0,
-          passengerTotalTimeMinutes: 0,
-          noTransitAvailable: true,
-        };
+        results[i] = { ...candidate, ...DEADLINE_SKIPPED_RESULT };
+        continue;
+      }
+
+      if (deadline && Date.now() >= deadline.getTime()) {
+        results[i] = { ...candidate, ...DEADLINE_SKIPPED_RESULT };
+        onSkippedDueToDeadline?.();
         continue;
       }
 

@@ -50,4 +50,13 @@ export interface PublicConfig {
   transitModesIncluded: TransitModesIncluded;
   minGeocodeQueryLength: number;
   geocodeDebounceMs: number;
+  /**
+   * design.md section 6.3/7 (INC-7) -- the soft latency target (seconds),
+   * not a secret. The frontend's Loading screen (ux-spec.md section 5) uses
+   * this to know when to swap to "Still working..." copy, coordinated with
+   * the same value the backend's orchestration deadline is derived from
+   * (api/drop-off-search.ts), so the two stay in lockstep without a second
+   * hardcoded threshold.
+   */
+  responseTimeTargetSeconds: number;
 }

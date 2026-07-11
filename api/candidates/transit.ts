@@ -104,10 +104,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   const dest = { lat: destLat, lng: destLng };
   const passengerDestination = { lat: passengerDestLat, lng: passengerDestLng };
 
-  const routingService = createGoogleRoutingService({ apiKey: config.mapApiKey });
-  const distanceMatrixService = createGoogleDistanceMatrixService({ apiKey: config.mapApiKey });
+  const routingService = createGoogleRoutingService({ apiKey: config.mapApiKey, timeoutMs: config.requestTimeoutMs });
+  const distanceMatrixService = createGoogleDistanceMatrixService({
+    apiKey: config.mapApiKey,
+    timeoutMs: config.requestTimeoutMs,
+  });
   const detourEvaluator = createDetourEvaluator(distanceMatrixService);
-  const transitEvaluator = createGoogleTransitService({ apiKey: config.mapApiKey });
+  const transitEvaluator = createGoogleTransitService({ apiKey: config.mapApiKey, timeoutMs: config.requestTimeoutMs });
 
   try {
     const directRoute = await routingService.getDirectRoute(start, dest);

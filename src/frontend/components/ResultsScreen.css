@@ -31,6 +31,17 @@
   color: var(--color-text-secondary);
 }
 
+.results-screen__try-again {
+  margin-top: var(--space-md);
+  min-height: 44px;
+  padding: var(--space-sm) var(--space-lg);
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--color-brand-primary);
+  color: var(--color-on-brand-primary);
+  cursor: pointer;
+}
+
 .results-screen__cards {
   display: flex;
   flex-direction: column;

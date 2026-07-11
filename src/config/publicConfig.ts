@@ -14,5 +14,6 @@ export function toPublicConfig(config: AppConfig): PublicConfig {
     transitModesIncluded: config.transitModesIncluded,
     minGeocodeQueryLength: config.minGeocodeQueryLength,
     geocodeDebounceMs: config.geocodeDebounceMs,
+    responseTimeTargetSeconds: config.responseTimeTargetSeconds,
   };
 }

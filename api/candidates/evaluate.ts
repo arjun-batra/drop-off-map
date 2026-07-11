@@ -81,8 +81,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   const start = { lat: startLat, lng: startLng };
   const dest = { lat: destLat, lng: destLng };
 
-  const routingService = createGoogleRoutingService({ apiKey: config.mapApiKey });
-  const distanceMatrixService = createGoogleDistanceMatrixService({ apiKey: config.mapApiKey });
+  const routingService = createGoogleRoutingService({ apiKey: config.mapApiKey, timeoutMs: config.requestTimeoutMs });
+  const distanceMatrixService = createGoogleDistanceMatrixService({
+    apiKey: config.mapApiKey,
+    timeoutMs: config.requestTimeoutMs,
+  });
   const detourEvaluator = createDetourEvaluator(distanceMatrixService);
 
   try {
