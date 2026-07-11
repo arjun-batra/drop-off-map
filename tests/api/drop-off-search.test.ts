@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import handler from "../../api/drop-off-search";
-import { createSessionToken } from "../../src/auth/session";
 import { createMock } from "../helpers/mockVercel";
+import { validSessionToken } from "../helpers/sessionToken";
 import { validEnv, validPaidTierEnv } from "../helpers/testEnv";
 import type { DropOffSearchResponse } from "../../src/search/types";
 import { DISCLAIMER_TEXT } from "../../src/search/types";
@@ -369,7 +369,7 @@ describe("POST /api/drop-off-search -- FR-006f, FR-010, FR-011, FR-012, FR-013",
     it("paid_tier, valid session cookie: passes AuthGate, providers called, 200", async () => {
       applyEnv(validPaidTierEnv("correct-password"));
       vi.stubGlobal("fetch", makeFetchRouter({}));
-      const token = createSessionToken("correct-password");
+      const token = validSessionToken("correct-password");
 
       const { req, res, statusCode } = createMock({
         method: "POST",

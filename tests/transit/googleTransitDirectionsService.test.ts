@@ -100,7 +100,7 @@ describe("parseTransitRoute -- design.md section 4.4 step 11 formulas (pure, no 
 
 describe("createGoogleTransitService.evaluate -- FR-006c/d/e, FR-008, and the walking-only DEC-3 fix", () => {
   it("sends mode=transit and the candidate-specific departure_time (FR-008 live-schedule requirement)", async () => {
-    const fetchImpl = vi.fn(async () =>
+    const fetchImpl = vi.fn(async (_url: string) =>
       directionsResponse({ status: "ZERO_RESULTS", routes: [] }),
     );
     const service = createGoogleTransitService({ apiKey: "k", fetchImpl });
@@ -113,7 +113,7 @@ describe("createGoogleTransitService.evaluate -- FR-006c/d/e, FR-008, and the wa
   });
 
   it("joins an explicit TRANSIT_MODES_INCLUDED list with Google's '|' separator", async () => {
-    const fetchImpl = vi.fn(async () => directionsResponse({ status: "ZERO_RESULTS", routes: [] }));
+    const fetchImpl = vi.fn(async (_url: string) => directionsResponse({ status: "ZERO_RESULTS", routes: [] }));
     const service = createGoogleTransitService({ apiKey: "k", fetchImpl });
     await service.evaluate(CANDIDATE, PASSENGER_DEST, DEPARTURE, {
       transitModesIncluded: ["bus", "subway"],

@@ -41,6 +41,7 @@ const freeTierConfig: PublicConfig = {
   transitModesIncluded: "all",
   minGeocodeQueryLength: 3,
   geocodeDebounceMs: 300,
+  responseTimeTargetSeconds: 5,
 };
 
 const paidTierConfig: PublicConfig = { ...freeTierConfig, appMode: "paid_tier" };

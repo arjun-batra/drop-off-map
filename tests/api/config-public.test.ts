@@ -85,7 +85,15 @@ describe("GET /api/config/public", () => {
       expect(statusCode()).toBe(500);
       const body = jsonBody() as { error: string; message: string };
       expect(body.error).toBe("config_error");
-      expect(body.message).toContain("PAID_TIER_ACCESS_PASSWORD");
+      // INC-8 cross-cutting error-handling pass (item 6 of handoff.md):
+      // the raw ConfigError problem list (naming the missing env var) is now
+      // sanitized -- only a fixed generic message reaches the client, the
+      // detail is logged server-side only. Assert both the generic message
+      // AND the absence of the leaked detail, mirroring the REV-009-style
+      // leak-check tests already established in tests/api/geocode.test.ts.
+      expect(body.message).toBe("The service is temporarily unavailable.");
+      expect(body.message).not.toContain("PAID_TIER_ACCESS_PASSWORD");
+      expect(body.message).not.toContain("is required but was not set");
     },
   );
 

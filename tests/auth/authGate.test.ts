@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AuthGate } from "../../src/auth/authGate";
 import { createSessionToken } from "../../src/auth/session";
+import { validSessionToken } from "../helpers/sessionToken";
 
 describe("AuthGate.check -- FR-016/FR-017 binary, app-wide gate", () => {
   describe("free_tier (NFR-002: no login required for baseline use)", () => {
@@ -49,7 +50,7 @@ describe("AuthGate.check -- FR-016/FR-017 binary, app-wide gate", () => {
     });
 
     it("passes with a valid session cookie matching the configured password", () => {
-      const token = createSessionToken(password);
+      const token = validSessionToken(password);
       const allowed = AuthGate.check(
         { headers: { cookie: `dropspot_session=${token}` } },
         { appMode: "paid_tier", paidTierAccessPassword: password },
@@ -58,7 +59,7 @@ describe("AuthGate.check -- FR-016/FR-017 binary, app-wide gate", () => {
     });
 
     it("blocks a session cookie that was valid for a since-rotated password", () => {
-      const staleToken = createSessionToken("old-password");
+      const staleToken = validSessionToken("old-password");
       const allowed = AuthGate.check(
         { headers: { cookie: `dropspot_session=${staleToken}` } },
         { appMode: "paid_tier", paidTierAccessPassword: "new-password" },
@@ -67,12 +68,46 @@ describe("AuthGate.check -- FR-016/FR-017 binary, app-wide gate", () => {
     });
 
     it("handles an array-valued cookie header (uses the first entry)", () => {
-      const token = createSessionToken(password);
+      const token = validSessionToken(password);
       const allowed = AuthGate.check(
         { headers: { cookie: [`dropspot_session=${token}`] } },
         { appMode: "paid_tier", paidTierAccessPassword: password },
       );
       expect(allowed).toBe(true);
+    });
+
+    describe("REV-002 -- session expiry, via AuthGate's injectable clock", () => {
+      it("passes for a token that has not yet expired", () => {
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        const token = createSessionToken(password, nowSeconds + 10);
+        const allowed = AuthGate.check(
+          { headers: { cookie: `dropspot_session=${token}` } },
+          { appMode: "paid_tier", paidTierAccessPassword: password },
+          nowSeconds * 1000,
+        );
+        expect(allowed).toBe(true);
+      });
+
+      it("blocks once the injected clock passes the token's expiry (session genuinely expires)", () => {
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        const token = createSessionToken(password, nowSeconds + 10);
+        const allowedAfterExpiry = AuthGate.check(
+          { headers: { cookie: `dropspot_session=${token}` } },
+          { appMode: "paid_tier", paidTierAccessPassword: password },
+          (nowSeconds + 11) * 1000,
+        );
+        expect(allowedAfterExpiry).toBe(false);
+      });
+
+      it("defaults to Date.now() when no clock is injected (production call sites are unaffected)", () => {
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        const expiredToken = createSessionToken(password, nowSeconds - 1000);
+        const allowed = AuthGate.check(
+          { headers: { cookie: `dropspot_session=${expiredToken}` } },
+          { appMode: "paid_tier", paidTierAccessPassword: password },
+        );
+        expect(allowed).toBe(false);
+      });
     });
   });
 });

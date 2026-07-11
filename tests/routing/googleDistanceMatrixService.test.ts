@@ -33,13 +33,13 @@ function matrixStatus(status: string, error_message?: string) {
 describe("createGoogleDistanceMatrixService -- design.md section 4.3 step 6, FR-007", () => {
   it("issues the 1xN 'to' shape request with departure_time and mode=driving", async () => {
     const fixedNow = new Date("2026-07-11T12:00:00Z");
-    const fetchSpy = vi.fn(async () => matrixOk([[{ duration: 300 }, { duration: 300 }]]));
+    const fetchSpy = vi.fn(async (_url: string) => matrixOk([[{ duration: 300 }, { duration: 300 }]]));
     const service = createGoogleDistanceMatrixService({ apiKey: "test-key", fetchImpl: fetchSpy, now: () => fixedNow });
 
     await service.getDurationsMinutes([START], CANDIDATES);
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const url = new URL(fetchSpy.mock.calls[0][0] as string);
+    const url = new URL(fetchSpy.mock.calls[0]![0] as string);
     expect(url.searchParams.get("mode")).toBe("driving");
     expect(url.searchParams.get("departure_time")).toBe(String(Math.floor(fixedNow.getTime() / 1000)));
     expect(url.searchParams.get("origins")).toBe("43.6532,-79.3832");
@@ -48,12 +48,12 @@ describe("createGoogleDistanceMatrixService -- design.md section 4.3 step 6, FR-
   });
 
   it("issues the Nx1 'from' shape request the same way", async () => {
-    const fetchSpy = vi.fn(async () => matrixOk([[{ duration: 300 }], [{ duration: 300 }]]));
+    const fetchSpy = vi.fn(async (_url: string) => matrixOk([[{ duration: 300 }], [{ duration: 300 }]]));
     const service = createGoogleDistanceMatrixService({ apiKey: "test-key", fetchImpl: fetchSpy });
 
     await service.getDurationsMinutes(CANDIDATES, [DEST]);
 
-    const url = new URL(fetchSpy.mock.calls[0][0] as string);
+    const url = new URL(fetchSpy.mock.calls[0]![0] as string);
     expect(url.searchParams.get("origins")).toBe("43.7,-79.4|43.71,-79.41");
     expect(url.searchParams.get("destinations")).toBe("43.8,-79.5");
   });
@@ -126,12 +126,12 @@ describe("createGoogleDistanceMatrixService -- design.md section 4.3 step 6, FR-
   });
 
   it("the configured apiKey is forwarded, never a hardcoded/other value", async () => {
-    const fetchSpy = vi.fn(async () => matrixOk([[{ duration: 300 }]]));
+    const fetchSpy = vi.fn(async (_url: string) => matrixOk([[{ duration: 300 }]]));
     const service = createGoogleDistanceMatrixService({ apiKey: "my-specific-configured-key", fetchImpl: fetchSpy });
 
     await service.getDurationsMinutes([START], [CANDIDATES[0]!]);
 
-    const url = new URL(fetchSpy.mock.calls[0][0] as string);
+    const url = new URL(fetchSpy.mock.calls[0]![0] as string);
     expect(url.searchParams.get("key")).toBe("my-specific-configured-key");
   });
 

@@ -14,7 +14,7 @@ function applyEnv(env: Record<string, string | undefined>) {
 function extractCookieValue(setCookieHeader: string | undefined): string | undefined {
   if (!setCookieHeader) return undefined;
   const match = /dropspot_session=([^;]+)/.exec(setCookieHeader);
-  return match ? decodeURIComponent(match[1]) : undefined;
+  return match?.[1] ? decodeURIComponent(match[1]) : undefined;
 }
 
 describe("POST /api/auth/verify-password", () => {
@@ -137,5 +137,45 @@ describe("POST /api/auth/verify-password", () => {
     const { req, res, statusCode } = createMock({ method: "GET" });
     handler(req, res);
     expect(statusCode()).toBe(405);
+  });
+
+  describe("REV-002 -- session cookie genuinely expires per SESSION_LIFETIME_SECONDS", () => {
+    it("Set-Cookie's Max-Age matches the configured SESSION_LIFETIME_SECONDS", () => {
+      applyEnv(validPaidTierEnv("correct-password", { SESSION_LIFETIME_SECONDS: "120" }));
+      const { req, res, header } = createMock({ method: "POST", body: { password: "correct-password" } });
+      handler(req, res);
+      expect(header("Set-Cookie")).toContain("Max-Age=120");
+    });
+
+    it("configurability: a different SESSION_LIFETIME_SECONDS produces a different Max-Age (not hardcoded)", () => {
+      applyEnv(validPaidTierEnv("correct-password", { SESSION_LIFETIME_SECONDS: "45" }));
+      const { req, res, header } = createMock({ method: "POST", body: { password: "correct-password" } });
+      handler(req, res);
+      expect(header("Set-Cookie")).toContain("Max-Age=45");
+      expect(header("Set-Cookie")).not.toContain("Max-Age=120");
+    });
+
+    it("a freshly-issued cookie passes AuthGate immediately, then genuinely fails once SESSION_LIFETIME_SECONDS elapses (injected clock)", () => {
+      applyEnv(validPaidTierEnv("correct-password", { SESSION_LIFETIME_SECONDS: "60" }));
+      const { req, res, header } = createMock({ method: "POST", body: { password: "correct-password" } });
+      handler(req, res);
+      const token = extractCookieValue(header("Set-Cookie"));
+      expect(token).toBeTruthy();
+
+      const issuedAtMs = Date.now();
+      const allowedImmediately = AuthGate.check(
+        { headers: { cookie: `dropspot_session=${token}` } },
+        { appMode: "paid_tier", paidTierAccessPassword: "correct-password" },
+        issuedAtMs,
+      );
+      expect(allowedImmediately).toBe(true);
+
+      const allowedAfterLifetime = AuthGate.check(
+        { headers: { cookie: `dropspot_session=${token}` } },
+        { appMode: "paid_tier", paidTierAccessPassword: "correct-password" },
+        issuedAtMs + 61_000,
+      );
+      expect(allowedAfterLifetime).toBe(false);
+    });
   });
 });

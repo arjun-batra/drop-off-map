@@ -81,10 +81,11 @@ describe("evaluateShortlist -- design.md section 4.4 steps 10-13 orchestration",
   it("preserves each candidate's original fields (spread) alongside its transit result", async () => {
     const evaluator: TransitEvaluator = { async evaluate() { return { ...OK_RESULT }; } };
     const shortlist = [candidate(4, 10)];
-    const [result] = await evaluateShortlist(evaluator, shortlist, PASSENGER_DEST, {
+    const results = await evaluateShortlist(evaluator, shortlist, PASSENGER_DEST, {
       transitModesIncluded: "all",
       providerConcurrencyLimit: 5,
     });
+    const result = results[0]!;
     expect(result.routeOrderIndex).toBe(4);
     expect(result.detourMinutes).toBe(1);
     expect(result.qualifies).toBe(true);

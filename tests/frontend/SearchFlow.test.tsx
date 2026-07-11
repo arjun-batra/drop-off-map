@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SearchFlow } from "../../src/frontend/components/SearchFlow";
 import type { PublicConfig } from "../../src/config/schema";
 import * as api from "../../src/frontend/api";
+import type { SearchOutcome } from "../../src/frontend/api";
 import { DISCLAIMER_TEXT } from "../../src/search/types";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -117,7 +118,7 @@ async function fillAndSubmit() {
 describe("SearchFlow -- ux-spec.md Input -> Loading -> Results | Error orchestration", () => {
   it("submitting a valid request shows the Loading screen, then Results on success", async () => {
     render();
-    let resolveSearch!: (value: unknown) => void;
+    let resolveSearch!: (value: SearchOutcome) => void;
     vi.spyOn(api, "searchDropOffPoints").mockReturnValue(
       new Promise((resolve) => {
         resolveSearch = resolve;
@@ -203,7 +204,7 @@ describe("SearchFlow -- ux-spec.md Input -> Loading -> Results | Error orchestra
   // normal `it(...)` now that it genuinely passes.
   it("BUG-001: clicking Cancel during Loading returns to Input, and a stale in-flight response later does NOT navigate the user away from Input to Results (race condition, no longer reproducible)", async () => {
     render();
-    let resolveSearch!: (value: unknown) => void;
+    let resolveSearch!: (value: SearchOutcome) => void;
     vi.spyOn(api, "searchDropOffPoints").mockReturnValue(
       new Promise((resolve) => {
         resolveSearch = resolve;
@@ -278,8 +279,8 @@ describe("SearchFlow -- ux-spec.md Input -> Loading -> Results | Error orchestra
   // results.
   it("BUG-001 compounding case: an older, superseded search resolving after a newer one has already rendered its results does not clobber them", async () => {
     render();
-    let resolveOlder!: (value: unknown) => void;
-    let resolveNewer!: (value: unknown) => void;
+    let resolveOlder!: (value: SearchOutcome) => void;
+    let resolveNewer!: (value: SearchOutcome) => void;
     const searchSpy = vi.spyOn(api, "searchDropOffPoints");
     searchSpy.mockReturnValueOnce(
       new Promise((resolve) => {
@@ -475,6 +476,70 @@ describe("SearchFlow -- ux-spec.md Input -> Loading -> Results | Error orchestra
 
       expect(container.textContent).toContain("DropSpot");
       consoleErrorSpy.mockRestore();
+    });
+  });
+
+  describe("REV-014 -- SearchFlow genuinely aborts the underlying request, not just its own token guard", () => {
+    it("clicking Cancel aborts the real AbortSignal passed to searchDropOffPoints", async () => {
+      render();
+      let capturedSignal: AbortSignal | undefined;
+      vi.spyOn(api, "searchDropOffPoints").mockImplementation((_request, signal) => {
+        capturedSignal = signal;
+        return new Promise(() => {
+          /* never resolves -- only Cancel should settle anything here */
+        });
+      });
+
+      await fillAndSubmit();
+      expect(capturedSignal).toBeDefined();
+      expect(capturedSignal!.aborted).toBe(false);
+
+      const cancelButton = Array.from(container.querySelectorAll("button")).find(
+        (b) => b.textContent === "Cancel",
+      )!;
+      act(() => {
+        cancelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flush();
+
+      // The exact signal instance handed to searchDropOffPoints for the
+      // cancelled search must itself report aborted:true -- this is the
+      // genuine network-cancellation signal REV-014 requires, not merely
+      // the pre-existing BUG-001 token guard (which only discards a result
+      // after the fact and would pass even if no AbortController existed).
+      expect(capturedSignal!.aborted).toBe(true);
+    });
+
+    it("each new search issues a fresh, non-aborted signal (the abort from a prior cancelled search is not reused/leaked forward)", async () => {
+      render();
+      const capturedSignals: AbortSignal[] = [];
+      vi.spyOn(api, "searchDropOffPoints").mockImplementation((_request, signal) => {
+        capturedSignals.push(signal!);
+        return new Promise(() => {
+          /* never resolves */
+        });
+      });
+
+      await fillAndSubmit();
+      expect(capturedSignals).toHaveLength(1);
+      expect(capturedSignals[0]!.aborted).toBe(false);
+
+      const cancelButton = Array.from(container.querySelectorAll("button")).find(
+        (b) => b.textContent === "Cancel",
+      )!;
+      act(() => {
+        cancelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flush();
+      expect(capturedSignals[0]!.aborted).toBe(true);
+
+      await fillAndSubmit();
+      expect(capturedSignals).toHaveLength(2);
+      // A distinct AbortController/signal per search -- the second search's
+      // signal is its own object and is not aborted just because the first
+      // one's controller was.
+      expect(capturedSignals[1]).not.toBe(capturedSignals[0]);
+      expect(capturedSignals[1]!.aborted).toBe(false);
     });
   });
 });

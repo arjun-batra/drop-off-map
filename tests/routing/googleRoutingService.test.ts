@@ -40,7 +40,7 @@ function directionsStatus(status: string, error_message?: string) {
 describe("createGoogleRoutingService -- FR-006a, FR-007 (live traffic)", () => {
   it("FR-007: every request includes departure_time (unix seconds) and mode=driving -- the live-traffic parameter is genuinely sent", async () => {
     const fixedNow = new Date("2026-07-11T12:00:00Z");
-    const fetchSpy = vi.fn(async () => directionsOk({ duration: 600 }));
+    const fetchSpy = vi.fn(async (_url: string) => directionsOk({ duration: 600 }));
     const service = createGoogleRoutingService({
       apiKey: "test-key",
       fetchImpl: fetchSpy,
@@ -50,7 +50,7 @@ describe("createGoogleRoutingService -- FR-006a, FR-007 (live traffic)", () => {
     await service.getDirectRoute(START, DEST);
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const calledUrl = new URL(fetchSpy.mock.calls[0][0] as string);
+    const calledUrl = new URL(fetchSpy.mock.calls[0]![0] as string);
     expect(calledUrl.searchParams.get("mode")).toBe("driving");
     expect(calledUrl.searchParams.get("departure_time")).toBe(
       String(Math.floor(fixedNow.getTime() / 1000)),
@@ -61,7 +61,7 @@ describe("createGoogleRoutingService -- FR-006a, FR-007 (live traffic)", () => {
   });
 
   it("FR-007: departure_time changes with the injected clock -- not a fixed/frozen literal", async () => {
-    const fetchSpy = vi.fn(async () => directionsOk({ duration: 600 }));
+    const fetchSpy = vi.fn(async (_url: string) => directionsOk({ duration: 600 }));
     const laterDate = new Date("2030-01-01T00:00:00Z");
     const service = createGoogleRoutingService({
       apiKey: "test-key",
@@ -71,7 +71,7 @@ describe("createGoogleRoutingService -- FR-006a, FR-007 (live traffic)", () => {
 
     await service.getDirectRoute(START, DEST);
 
-    const calledUrl = new URL(fetchSpy.mock.calls[0][0] as string);
+    const calledUrl = new URL(fetchSpy.mock.calls[0]![0] as string);
     expect(calledUrl.searchParams.get("departure_time")).toBe(
       String(Math.floor(laterDate.getTime() / 1000)),
     );
@@ -146,12 +146,12 @@ describe("createGoogleRoutingService -- FR-006a, FR-007 (live traffic)", () => {
   });
 
   it("the configured apiKey is forwarded in the request, never a hardcoded/other value", async () => {
-    const fetchSpy = vi.fn(async () => directionsOk({ duration: 600 }));
+    const fetchSpy = vi.fn(async (_url: string) => directionsOk({ duration: 600 }));
     const service = createGoogleRoutingService({ apiKey: "my-specific-configured-key", fetchImpl: fetchSpy });
 
     await service.getDirectRoute(START, DEST);
 
-    const calledUrl = new URL(fetchSpy.mock.calls[0][0] as string);
+    const calledUrl = new URL(fetchSpy.mock.calls[0]![0] as string);
     expect(calledUrl.searchParams.get("key")).toBe("my-specific-configured-key");
   });
 

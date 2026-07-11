@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import handler from "../../api/geocode";
 import { AuthGate } from "../../src/auth/authGate";
-import { createSessionToken } from "../../src/auth/session";
 import { createMock } from "../helpers/mockVercel";
+import { validSessionToken } from "../helpers/sessionToken";
 import { validEnv, validPaidTierEnv } from "../helpers/testEnv";
 
 const ORIGINAL_ENV = { ...process.env };
@@ -92,7 +92,7 @@ describe("GET /api/geocode -- FR-001, FR-003, FR-015, AuthGate wiring", () => {
         vi.fn().mockResolvedValue(googleOk([{ formatted_address: "123 Main St, Toronto, ON", lat: 43.65, lng: -79.38 }])),
       );
 
-      const token = createSessionToken("correct-password");
+      const token = validSessionToken("correct-password");
       const { req, res, statusCode, jsonBody } = createMock({
         method: "GET",
         query: { query: "123 Main St" },
@@ -108,7 +108,7 @@ describe("GET /api/geocode -- FR-001, FR-003, FR-015, AuthGate wiring", () => {
       // Belt-and-suspenders re-check of AuthGate's own rotation behavior, now
       // exercised through the real protected endpoint rather than only the
       // AuthGate unit itself.
-      const staleToken = createSessionToken("old-password");
+      const staleToken = validSessionToken("old-password");
       applyEnv(validPaidTierEnv("new-password"));
       const fetchSpy = vi.fn().mockResolvedValue(googleOk([]));
       vi.stubGlobal("fetch", fetchSpy);

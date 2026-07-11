@@ -8,12 +8,12 @@ describe("decodePolyline -- pure encoded-polyline decoding (precision 5)", () =>
     const points = decodePolyline(encoded);
 
     expect(points).toHaveLength(3);
-    expect(points[0].lat).toBeCloseTo(38.5, 5);
-    expect(points[0].lng).toBeCloseTo(-120.2, 5);
-    expect(points[1].lat).toBeCloseTo(40.7, 5);
-    expect(points[1].lng).toBeCloseTo(-120.95, 5);
-    expect(points[2].lat).toBeCloseTo(43.252, 5);
-    expect(points[2].lng).toBeCloseTo(-126.453, 5);
+    expect(points[0]!.lat).toBeCloseTo(38.5, 5);
+    expect(points[0]!.lng).toBeCloseTo(-120.2, 5);
+    expect(points[1]!.lat).toBeCloseTo(40.7, 5);
+    expect(points[1]!.lng).toBeCloseTo(-120.95, 5);
+    expect(points[2]!.lat).toBeCloseTo(43.252, 5);
+    expect(points[2]!.lng).toBeCloseTo(-126.453, 5);
   });
 
   it("edge case: an empty string decodes to an empty array, not a crash", () => {

@@ -46,7 +46,7 @@ describe("shouldUseSecureCookie", () => {
 
 describe("buildSessionCookieHeader", () => {
   it("includes HttpOnly, SameSite=Lax, and Path=/", () => {
-    const header = buildSessionCookieHeader("dropspot_session", "tok123", { secure: false });
+    const header = buildSessionCookieHeader("dropspot_session", "tok123", { secure: false, maxAgeSeconds: 3600 });
     expect(header).toContain("HttpOnly");
     expect(header).toContain("SameSite=Lax");
     expect(header).toContain("Path=/");
@@ -54,17 +54,38 @@ describe("buildSessionCookieHeader", () => {
   });
 
   it("omits Secure when secure=false (local http dev)", () => {
-    const header = buildSessionCookieHeader("dropspot_session", "tok123", { secure: false });
+    const header = buildSessionCookieHeader("dropspot_session", "tok123", { secure: false, maxAgeSeconds: 3600 });
     expect(header).not.toContain("Secure");
   });
 
   it("includes Secure when secure=true (production/preview)", () => {
-    const header = buildSessionCookieHeader("dropspot_session", "tok123", { secure: true });
+    const header = buildSessionCookieHeader("dropspot_session", "tok123", { secure: true, maxAgeSeconds: 3600 });
     expect(header).toContain("Secure");
   });
 
   it("URL-encodes the token value", () => {
-    const header = buildSessionCookieHeader("dropspot_session", "tok with space", { secure: false });
+    const header = buildSessionCookieHeader("dropspot_session", "tok with space", {
+      secure: false,
+      maxAgeSeconds: 3600,
+    });
     expect(header).toContain(encodeURIComponent("tok with space"));
+  });
+
+  describe("REV-002 -- Max-Age (defense-in-depth, mirrors the token's own signed expiry)", () => {
+    it("includes Max-Age matching the configured maxAgeSeconds", () => {
+      const header = buildSessionCookieHeader("dropspot_session", "tok123", { secure: false, maxAgeSeconds: 3600 });
+      expect(header).toContain("Max-Age=3600");
+    });
+
+    it("configurability: reflects a changed maxAgeSeconds rather than a fixed value", () => {
+      const header = buildSessionCookieHeader("dropspot_session", "tok123", { secure: false, maxAgeSeconds: 60 });
+      expect(header).toContain("Max-Age=60");
+      expect(header).not.toContain("Max-Age=3600");
+    });
+
+    it("floors a fractional maxAgeSeconds to a whole number of seconds", () => {
+      const header = buildSessionCookieHeader("dropspot_session", "tok123", { secure: false, maxAgeSeconds: 60.9 });
+      expect(header).toContain("Max-Age=60");
+    });
   });
 });

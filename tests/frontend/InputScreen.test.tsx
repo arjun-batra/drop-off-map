@@ -17,6 +17,7 @@ const baseConfig: PublicConfig = {
   transitModesIncluded: "all",
   minGeocodeQueryLength: 3,
   geocodeDebounceMs: 300,
+  responseTimeTargetSeconds: 5,
 };
 
 // A resolved point far outside Toronto's 200km default radius (Vancouver).
@@ -508,7 +509,7 @@ describe("InputScreen -- FR-001, FR-003, FR-004, FR-015, NFR-006", () => {
       act(() => cta().dispatchEvent(new MouseEvent("click", { bubbles: true })));
 
       expect(onSubmitSpy).toHaveBeenCalledTimes(1);
-      const request = onSubmitSpy.mock.calls[0][0];
+      const request = onSubmitSpy.mock.calls[0]?.[0];
       expect(request).toEqual({
         start: { lat: NEARBY_RESULT.lat, lng: NEARBY_RESULT.lng, label: NEARBY_RESULT.label },
         driverDestination: { lat: NEARBY_RESULT.lat, lng: NEARBY_RESULT.lng, label: NEARBY_RESULT.label },

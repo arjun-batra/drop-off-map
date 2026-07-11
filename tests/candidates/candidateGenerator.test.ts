@@ -3,7 +3,10 @@ import { CandidateGenerator, type CandidateSamplingConfig } from "../../src/cand
 import { haversineDistanceKm } from "../../src/geo/radiusValidator";
 import type { LatLng } from "../../src/geo/types";
 
-const TORONTO = { lat: 43.6532, lng: -79.3832 };
+// Includes `label` so this same constant can double as both a plain LatLng
+// (e.g. polyline vertices) and a GeoPoint (CandidateSamplingConfig's
+// `geographicCenter`, which requires `label`) without a second constant.
+const TORONTO = { lat: 43.6532, lng: -79.3832, label: "Toronto, ON" };
 const EARTH_RADIUS_KM = 6371;
 
 /**

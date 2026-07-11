@@ -4,8 +4,9 @@ import { validEnv, validPaidTierEnv, withoutKey } from "../helpers/testEnv";
 
 // design.md section 7 / section 7.1 (REV-006/REV-007): 14 original keys plus
 // MIN_GEOCODE_QUERY_LENGTH/GEOCODE_DEBOUNCE_MS, promoted from hardcoded
-// constants during the INC-2 follow-up fix pass.
-const ALL_16_KEYS = [
+// constants during the INC-2 follow-up fix pass, plus SESSION_LIFETIME_SECONDS
+// (REV-002/INC-8 session-cookie hardening key).
+const ALL_17_KEYS = [
   "MAP_ROUTING_PROVIDER",
   "MAP_API_KEY",
   "GEOGRAPHIC_CENTER",
@@ -23,6 +24,7 @@ const ALL_16_KEYS = [
   "PROVIDER_CONCURRENCY_LIMIT",
   "MIN_GEOCODE_QUERY_LENGTH",
   "GEOCODE_DEBOUNCE_MS",
+  "SESSION_LIFETIME_SECONDS",
 ];
 
 describe("loadConfig -- happy path", () => {
@@ -46,6 +48,7 @@ describe("loadConfig -- happy path", () => {
       providerConcurrencyLimit: 10,
       minGeocodeQueryLength: 3,
       geocodeDebounceMs: 300,
+      sessionLifetimeSeconds: 3600,
     });
   });
 
@@ -114,6 +117,11 @@ describe("loadConfig -- configurability (catches hardcoded values)", () => {
     const config = loadConfig(validEnv({ GEOCODE_DEBOUNCE_MS: "750" }));
     expect(config.geocodeDebounceMs).toBe(750);
   });
+
+  it("reflects a changed SESSION_LIFETIME_SECONDS value rather than a hardcoded lifetime (REV-002)", () => {
+    const config = loadConfig(validEnv({ SESSION_LIFETIME_SECONDS: "60" }));
+    expect(config.sessionLifetimeSeconds).toBe(60);
+  });
 });
 
 describe("loadConfig -- fails fast, listing every problem (not just the first)", () => {
@@ -126,7 +134,7 @@ describe("loadConfig -- fails fast, listing every problem (not just the first)",
       expect(err).toBeInstanceOf(ConfigError);
       const problems = (err as ConfigError).problems;
       // At minimum, every required key without a value should surface a problem.
-      for (const key of ALL_16_KEYS) {
+      for (const key of ALL_17_KEYS) {
         if (key === "PAID_TIER_ACCESS_PASSWORD") continue; // only required when APP_MODE=paid_tier
         expect(problems.some((p) => p.includes(key)), `expected a problem mentioning ${key}`).toBe(true);
       }
@@ -146,7 +154,7 @@ describe("loadConfig -- fails fast, listing every problem (not just the first)",
     }
   });
 
-  for (const key of ALL_16_KEYS) {
+  for (const key of ALL_17_KEYS) {
     if (key === "PAID_TIER_ACCESS_PASSWORD") continue; // covered separately below
     it(`fails when only ${key} is missing`, () => {
       expect(() => loadConfig(withoutKey(validEnv(), key))).toThrow(ConfigError);
@@ -219,5 +227,11 @@ describe("loadConfig -- fails fast, listing every problem (not just the first)",
 
   it("rejects TRANSIT_MODES_INCLUDED set to only commas/whitespace", () => {
     expect(() => loadConfig(validEnv({ TRANSIT_MODES_INCLUDED: " , , " }))).toThrow(ConfigError);
+  });
+
+  it("rejects a non-integer or non-positive SESSION_LIFETIME_SECONDS (REV-002)", () => {
+    expect(() => loadConfig(validEnv({ SESSION_LIFETIME_SECONDS: "60.5" }))).toThrow(ConfigError);
+    expect(() => loadConfig(validEnv({ SESSION_LIFETIME_SECONDS: "0" }))).toThrow(ConfigError);
+    expect(() => loadConfig(validEnv({ SESSION_LIFETIME_SECONDS: "-1" }))).toThrow(ConfigError);
   });
 });
