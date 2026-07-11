@@ -97,6 +97,61 @@ All values below come from `docs/design.md` section 7 (which supersedes/expands 
 | `MAP_TILE_URL_TEMPLATE` | No\* | No (optional) | Added INC-9. Leaflet XYZ tile-layer URL template for the optional Results-screen map panel. `null`/unset is a fully supported "map view disabled" state (ux-spec.md section 6.7's fail-silent/omit-panel behavior) — no FR/NFR depends on this. \*If pointed at a paid tile provider (e.g. MapTiler, Stadia Maps), the provider's API key is embedded directly in this URL string by the operator — see note below the table. |
 | `MAP_TILE_ATTRIBUTION` | No | No (optional, but required alongside `MAP_TILE_URL_TEMPLATE` if that one is set) | Added INC-9. Attribution text/HTML the tile provider's license terms require. Must be updated to match whichever provider `MAP_TILE_URL_TEMPLATE` points at. |
 
+### 4.1 Quick-start default values (copy-paste block for Vercel)
+
+The block below is a convenience reference only — it reproduces the same 20 keys and defaults from the table above (and `.env.example`'s exact value formatting) as literal `KEY=value` lines, so they can be bulk-pasted into Vercel's Environment Variables screen (Vercel's bulk-add box accepts `.env`-style paste, including `#` comment lines) or used as a quick local reference. **This is not a new source of truth** — the table above and `.env.example` remain authoritative; if they ever drift from this block, this block is the one that's wrong.
+
+18 of the 20 keys below are non-secret and shown with their real, sensible defaults. The remaining 2 (`MAP_API_KEY`, `PAID_TIER_ACCESS_PASSWORD`) are true secrets (section 4 above) — they are shown only as `KEY=<your-value-here>` placeholders. **Never replace those placeholders with a real value in this file, in chat, or in any commit.** Enter their real values directly into the Vercel dashboard (or a gitignored `.env.local` for Development) per section 8, item 3.
+
+```
+# --- Provider ---
+MAP_ROUTING_PROVIDER=google_maps_platform
+MAP_API_KEY=<your-value-here>
+
+# --- Service area (NFR-006, FR-004) ---
+GEOGRAPHIC_CENTER={"lat":43.6532,"lng":-79.3832,"label":"Toronto, ON"}
+GEOGRAPHIC_RADIUS_KM=200
+
+# --- Results shaping ---
+MAX_CANDIDATES_RETURNED=3
+
+# --- Access control (FR-016, FR-017) ---
+APP_MODE=free_tier
+# The next two are only required if APP_MODE=paid_tier above; the config
+# loader fails fast if APP_MODE=paid_tier and either is unset. Leave unset
+# (or omit) if running free_tier.
+PAID_TIER_ACCESS_PASSWORD=<your-value-here>
+SESSION_LIFETIME_SECONDS=3600
+
+# --- Latency (NFR-004) ---
+RESPONSE_TIME_TARGET_SECONDS=5
+REQUEST_TIMEOUT_MS=4000
+
+# --- Transit ---
+TRANSIT_MODES_INCLUDED=all
+
+# --- Geocode autocomplete cost controls ---
+MIN_GEOCODE_QUERY_LENGTH=3
+GEOCODE_DEBOUNCE_MS=300
+
+# --- Candidate generation / evaluation tuning ---
+CANDIDATE_SPACING_METERS=1000
+MAX_RAW_CANDIDATES_SAMPLED=20
+MAX_TRANSIT_EVALUATIONS_PER_REQUEST=8
+DISTANCE_MATRIX_BATCH_SIZE=25
+PROVIDER_CONCURRENCY_LIMIT=10
+
+# --- Map view (INC-9) — both keys below are OPTIONAL. Leave unset and the
+# Results-screen map panel is simply omitted; no FR/NFR depends on this.
+# Default shown points at CARTO's free, keyless "Positron" basemap — fine
+# for low-volume use, rate-limited at production scale (see .env.example
+# for the MapTiler/Stadia Maps alternative for real production volume).
+MAP_TILE_URL_TEMPLATE=https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png
+MAP_TILE_ATTRIBUTION=&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>
+```
+
+---
+
 **`MAP_TILE_URL_TEMPLATE` is marked "No" under Secret? deliberately, even though a paid tile provider's API key may be embedded in its value.** This is architectural, not an oversight: Leaflet fetches map tiles directly from the browser (no server-side proxy — see design.md section 3.1a/handoff.md INC-9), so any key embedded in this URL is necessarily visible in the browser's own network requests regardless of how the value is stored server-side. Do not treat this the same as `MAP_API_KEY`/`PAID_TIER_ACCESS_PASSWORD` (which never reach the browser) — if the operator is concerned about a paid tile-provider key being publicly visible this way, that provider's own dashboard should be used to restrict the key by HTTP referrer, the same mitigation recommended for `MAP_API_KEY` in section 8 item 3(c) below.
 
 **Only two true secrets exist in this system: `MAP_API_KEY` and `PAID_TIER_ACCESS_PASSWORD`.** Neither is ever required by GitHub Actions CI (section 5) — CI runs against mocked provider responses per design section 10 (INC-6 QA notes), so no live Google Maps Platform key is stored as a GitHub Actions secret. This deliberately minimizes where the secret lives (Vercel only) and avoids duplicating it across two secret stores.
@@ -247,3 +302,4 @@ Design.md section 9 flags: "Operational log retention for request-scoped coordin
 |---|---|---|
 | 2026-07-11 | Initial runbook created: Vercel hosting recommendation + justification, environment variable/secrets table (names only), CI pipeline description, DQ-4 billing-alert setup, deploy verification steps, rollback procedure (untested — no deploy exists yet), open items requiring user action, logging/retention guidance (design section 9) | Phase 2 -> Phase 3 gate requirement (NFR-005): CI/CD + hosting + runbook established before INC-1 begins |
 | 2026-07-11 | Phase 4 closure prep pass: added the 5 config keys introduced across INC-2 follow-up/INC-8/INC-9 (`MIN_GEOCODE_QUERY_LENGTH`, `GEOCODE_DEBOUNCE_MS`, `SESSION_LIFETIME_SECONDS`, `MAP_TILE_URL_TEMPLATE`, `MAP_TILE_ATTRIBUTION`) to section 4's table (had drifted since initial drafting — table previously only listed the original 14 keys); confirmed via fresh `npm ci`/`npm run build`/`lint`/`typecheck`/`test` that the build is reproducible and CI's real gate (not its pre-INC-1 skip branch) is what actually runs; confirmed `/api/config/public`'s shape and zero-cost/unauthenticated behavior are unchanged since INC-1 despite new response fields; added section 8 item 8 (optional map tile provider) and new section 8.1 (final consolidated pre-deploy checklist, folding REV-010's real-API-key verification into the first deploy's section 6 step 4 rather than treating it as a separate exercise); updated section 9.4 to reflect that no real deploy has ever existed to test rollback against, clarifying this is a scope fact, not a missed step; updated stale "no application code exists yet" framing in sections 0 and 5. No secret values added anywhere. | Phase 4 closure step per `CLAUDE.md` ("release executes/dry-runs the deploy per runbook"); config table had genuinely drifted from the shipped `AppConfig` schema and needed correcting before the real deploy checklist could be trusted |
+| 2026-07-11 | Added section 4.1, "Quick-start default values": a copy-paste `KEY=value` block reproducing section 4's 20-key table (18 non-secret keys with real defaults sourced from `.env.example`; `MAP_API_KEY`/`PAID_TIER_ACCESS_PASSWORD` shown only as `<your-value-here>` placeholders, never real values) for bulk-pasting into Vercel's Environment Variables screen. Explicitly notes `PAID_TIER_ACCESS_PASSWORD`/`SESSION_LIFETIME_SECONDS` apply only when `APP_MODE=paid_tier`, and `MAP_TILE_URL_TEMPLATE`/`MAP_TILE_ATTRIBUTION` are optional (INC-9 map view). No secret values added anywhere; the table in section 4 and `.env.example` remain the authoritative source. | Requested documentation convenience: a single copy-pasteable reference for operator setup in Vercel, without duplicating or contradicting the authoritative sources |
