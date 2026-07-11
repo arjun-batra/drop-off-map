@@ -13,6 +13,8 @@ interface MockReqInit {
   body?: unknown;
   cookie?: string;
   headers?: Record<string, string>;
+  /** Query-string params, e.g. { query: "123 Main St" } or { lat: "1", lng: "2" }. */
+  query?: Record<string, string | string[]>;
 }
 
 /**
@@ -30,7 +32,7 @@ export function createMock(init: MockReqInit = {}): MockRes {
     method: init.method ?? "GET",
     headers,
     body: init.body,
-    query: {},
+    query: init.query ?? {},
   } as unknown as VercelRequest;
 
   const res = {
