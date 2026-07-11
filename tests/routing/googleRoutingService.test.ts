@@ -154,4 +154,60 @@ describe("createGoogleRoutingService -- FR-006a, FR-007 (live traffic)", () => {
     const calledUrl = new URL(fetchSpy.mock.calls[0][0] as string);
     expect(calledUrl.searchParams.get("key")).toBe("my-specific-configured-key");
   });
+
+  describe("REQUEST_TIMEOUT_MS enforcement (NFR-004, INC-7)", () => {
+    it("a hung provider call is genuinely aborted at timeoutMs and surfaces as RoutingProviderError('TIMEOUT'), not an unbounded hang", async () => {
+      const fetchSpy = vi.fn(
+        (_url: string, init?: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              reject(err);
+            });
+          }),
+      );
+      const service = createGoogleRoutingService({ apiKey: "test-key", fetchImpl: fetchSpy as never, timeoutMs: 20 });
+
+      await expect(service.getDirectRoute(START, DEST)).rejects.toMatchObject({ providerStatus: "TIMEOUT" });
+    });
+
+    it("omitting timeoutMs is a passthrough: an intentionally slow (but not truly hanging) call still resolves normally", async () => {
+      const fetchSpy = vi.fn(async () => directionsOk({ duration: 600 }));
+      const service = createGoogleRoutingService({ apiKey: "test-key", fetchImpl: fetchSpy });
+
+      await expect(service.getDirectRoute(START, DEST)).resolves.toMatchObject({ durationMinutes: 10 });
+    });
+
+    it("configurability: a longer timeoutMs is not aborted where a shorter one would be, for the identical slow call", async () => {
+      function slowFetch(delayMs: number) {
+        return (_url: string, init?: { signal?: AbortSignal }) =>
+          new Promise((resolve, reject) => {
+            const timer = setTimeout(() => resolve(directionsOk({ duration: 600 })), delayMs);
+            init?.signal?.addEventListener("abort", () => {
+              clearTimeout(timer);
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              reject(err);
+            });
+          });
+      }
+
+      const shortTimeoutService = createGoogleRoutingService({
+        apiKey: "test-key",
+        fetchImpl: slowFetch(30) as never,
+        timeoutMs: 5,
+      });
+      await expect(shortTimeoutService.getDirectRoute(START, DEST)).rejects.toMatchObject({
+        providerStatus: "TIMEOUT",
+      });
+
+      const longTimeoutService = createGoogleRoutingService({
+        apiKey: "test-key",
+        fetchImpl: slowFetch(5) as never,
+        timeoutMs: 200,
+      });
+      await expect(longTimeoutService.getDirectRoute(START, DEST)).resolves.toMatchObject({ durationMinutes: 10 });
+    });
+  });
 });

@@ -257,4 +257,38 @@ describe("createGoogleTransitService.evaluate -- FR-006c/d/e, FR-008, and the wa
       ).rejects.toThrow(RoutingProviderError);
     });
   });
+
+  describe("REQUEST_TIMEOUT_MS enforcement (NFR-004, INC-7) -- design.md section 6.1 names this the slowest/highest-variance leg", () => {
+    it("a hung transit call is genuinely aborted at timeoutMs and surfaces as RoutingProviderError('TIMEOUT')", async () => {
+      const fetchImpl = vi.fn(
+        (_url: string, init?: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              reject(err);
+            });
+          }),
+      );
+      const service = createGoogleTransitService({ apiKey: "k", fetchImpl: fetchImpl as never, timeoutMs: 20 });
+
+      await expect(
+        service.evaluate(CANDIDATE, PASSENGER_DEST, DEPARTURE, { transitModesIncluded: "all" }),
+      ).rejects.toMatchObject({ providerStatus: "TIMEOUT" });
+    });
+
+    it("omitting timeoutMs is a passthrough: a normal call still resolves", async () => {
+      const fetchImpl = vi.fn(async () =>
+        directionsResponse({
+          status: "OK",
+          routes: [{ legs: [{ steps: [walkingStep(120), transitStep(0, 600)] }] }],
+        }),
+      );
+      const service = createGoogleTransitService({ apiKey: "k", fetchImpl });
+
+      await expect(
+        service.evaluate(CANDIDATE, PASSENGER_DEST, DEPARTURE, { transitModesIncluded: "all" }),
+      ).resolves.toMatchObject({ noTransitAvailable: false });
+    });
+  });
 });

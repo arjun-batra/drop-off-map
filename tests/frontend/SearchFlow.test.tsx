@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SearchFlow } from "../../src/frontend/components/SearchFlow";
 import type { PublicConfig } from "../../src/config/schema";
 import * as api from "../../src/frontend/api";
+import { DISCLAIMER_TEXT } from "../../src/search/types";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -18,6 +19,7 @@ const config: PublicConfig = {
   transitModesIncluded: "all",
   minGeocodeQueryLength: 3,
   geocodeDebounceMs: 300,
+  responseTimeTargetSeconds: 5,
 };
 
 const RESOLVED = { lat: 43.66, lng: -79.4, label: "456 Bay St, Toronto, ON" };
@@ -356,5 +358,123 @@ describe("SearchFlow -- ux-spec.md Input -> Loading -> Results | Error orchestra
     // response must not have silently won just because it resolved after.
     expect(container.textContent).toContain("Newer Candidate Rd");
     expect(container.textContent).not.toContain("Older Candidate Rd");
+  });
+
+  describe("FR-014/REV-012: disclaimer resilience (independent QA verification, not just dev's self-report)", () => {
+    it("a normal ranked result shows the disclaimer banner with the exact required copy alongside the results", async () => {
+      render();
+      vi.spyOn(api, "searchDropOffPoints").mockResolvedValue({
+        ok: true,
+        response: {
+          status: "ranked",
+          candidates: [
+            {
+              rank: 1,
+              location: { lat: 43.66, lng: -79.4 },
+              label: "Oak Ave & Main St",
+              routeOrderIndex: 0,
+              driveTimeToDropoffMinutes: 8,
+              detourMinutes: 3,
+              walkTimeMinutes: 4,
+              waitTimeMinutes: 5,
+              transitTimeMinutes: 17,
+              passengerTotalTimeMinutes: 26,
+              driverTotalTimeMinutes: 27,
+              exceedsThreshold: false,
+            },
+          ],
+          disclaimer: DISCLAIMER_TEXT,
+          requestId: "r1",
+          timingMs: 5,
+        },
+      });
+
+      await fillAndSubmit();
+
+      expect(container.textContent).toContain(DISCLAIMER_TEXT);
+      expect(container.textContent).toContain("Oak Ave & Main St");
+    });
+
+    it("no_viable_option does not show the disclaimer (design.md section 5.2's candidates.length > 0 contract, per SearchFlow's showDisclaimer check)", async () => {
+      render();
+      vi.spyOn(api, "searchDropOffPoints").mockResolvedValue({
+        ok: true,
+        response: { status: "no_viable_option", candidates: [], message: "no luck", requestId: "r1", timingMs: 5 },
+      });
+
+      await fillAndSubmit();
+
+      expect(container.textContent).toContain("No drop-off points found");
+      expect(container.textContent).not.toContain(DISCLAIMER_TEXT);
+    });
+
+    // This is the orchestrator's specifically-requested independent check:
+    // rather than trusting dev's scratch-test self-report, force a REAL crash
+    // inside ResultsScreen's own rendering (a malformed `candidates` entry --
+    // `null` -- causes `candidate.rank` to throw the instant React evaluates
+    // the .map() callback, a genuine data-driven crash, not a synthetic swap-
+    // in of a fake throwing component) and confirm the disclaimer, rendered
+    // as a structural sibling outside the ErrorBoundary, survives.
+    it("a genuine crash in ResultsScreen's data-dependent rendering (malformed candidate data) does not take the disclaimer down with it", async () => {
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      render();
+      vi.spyOn(api, "searchDropOffPoints").mockResolvedValue({
+        ok: true,
+        response: {
+          status: "ranked",
+          // Deliberately malformed: a null candidate entry. ResultsScreen's
+          // `response.candidates.map((candidate) => <CandidateCard
+          // key={candidate.rank} .../>)` will throw a real TypeError here
+          // ("Cannot read properties of null") -- this is not a mock/stub of
+          // a throw, it is the actual production component crashing on bad
+          // data, exactly the scenario ux-spec.md section 6.2 and REV-012
+          // are both about.
+          candidates: [null] as never,
+          disclaimer: DISCLAIMER_TEXT,
+          requestId: "r1",
+          timingMs: 5,
+        },
+      });
+
+      await fillAndSubmit();
+
+      // The ErrorBoundary's fallback took over ResultsScreen's subtree...
+      expect(container.textContent).toContain("Something went wrong showing your results");
+      // ...but the disclaimer, rendered as a sibling OUTSIDE that boundary,
+      // is still present in the very same render pass. This is the
+      // structural (not conventional) guarantee REV-012 required.
+      expect(container.textContent).toContain(DISCLAIMER_TEXT);
+
+      consoleErrorSpy.mockRestore();
+    });
+
+    it("the 'Edit search' escape hatch in the crash fallback still works even while the disclaimer above it is showing", async () => {
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      render();
+      vi.spyOn(api, "searchDropOffPoints").mockResolvedValue({
+        ok: true,
+        response: {
+          status: "ranked",
+          candidates: [null] as never,
+          disclaimer: DISCLAIMER_TEXT,
+          requestId: "r1",
+          timingMs: 5,
+        },
+      });
+
+      await fillAndSubmit();
+      expect(container.textContent).toContain(DISCLAIMER_TEXT);
+
+      const editLink = Array.from(container.querySelectorAll("button")).find((b) =>
+        b.textContent?.includes("Edit search"),
+      )!;
+      act(() => {
+        editLink.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flush();
+
+      expect(container.textContent).toContain("DropSpot");
+      consoleErrorSpy.mockRestore();
+    });
   });
 });

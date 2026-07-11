@@ -359,6 +359,42 @@ describe("GET /api/geocode -- FR-001, FR-003, FR-015, AuthGate wiring", () => {
       expect((jsonBody() as { error: string }).error).toBe("config_error");
     });
   });
+
+  describe("REQUEST_TIMEOUT_MS enforcement end-to-end through the real handler (NFR-004, INC-7)", () => {
+    it("a hung provider call is genuinely aborted and surfaces as a sanitized 502, not a hang or a leaked internal message", async () => {
+      applyEnv(validEnv({ REQUEST_TIMEOUT_MS: "30" }));
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          (_url: string, init?: { signal?: AbortSignal }) =>
+            new Promise((_resolve, reject) => {
+              init?.signal?.addEventListener("abort", () => {
+                const err = new Error("aborted");
+                err.name = "AbortError";
+                reject(err);
+              });
+            }),
+        ),
+      );
+
+      const { req, res, statusCode, jsonBody } = createMock({ method: "GET", query: { query: "123 Main St" } });
+      await handler(req, res);
+
+      expect(statusCode()).toBe(502);
+      const body = jsonBody() as Record<string, unknown>;
+      expect(body.error).toBe("provider_error");
+      expect(JSON.stringify(body)).not.toMatch(/abort/i);
+      expect(JSON.stringify(body)).not.toMatch(/timed out after/i);
+
+      const loggedMessages = consoleErrorSpy.mock.calls.map((call) => call.join(" ")).join("\n");
+      expect(loggedMessages).toMatch(/timed out after 30ms/i);
+
+      consoleErrorSpy.mockRestore();
+      vi.unstubAllGlobals();
+    });
+  });
 });
 
 describe("sanity: AuthGate.check itself still gates as expected (regression guard for this suite's mocks)", () => {

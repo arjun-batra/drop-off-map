@@ -28,10 +28,12 @@ const REQUEST: DropOffSearchRequest = {
   maxDetourMinutes: 15,
 };
 
-function render(response: DropOffSearchResponse, onEditSearch = vi.fn()) {
+function render(response: DropOffSearchResponse, onEditSearch = vi.fn(), onTryAgain = vi.fn()) {
   act(() => {
     root = createRoot(container);
-    root.render(<ResultsScreen response={response} request={REQUEST} onEditSearch={onEditSearch} />);
+    root.render(
+      <ResultsScreen response={response} request={REQUEST} onEditSearch={onEditSearch} onTryAgain={onTryAgain} />,
+    );
   });
 }
 
@@ -165,6 +167,46 @@ describe("ResultsScreen -- ux-spec.md section 6, FR-010/FR-011/FR-012/FR-013", (
     expect(container.textContent).toContain("We couldn't find a route with transit access");
   });
 
+  it("timeout (INC-7, design.md section 6.3/8): renders a distinct 'taking longer than expected' empty state, no cards, and a 'Try again' button that invokes onTryAgain", () => {
+    const response: DropOffSearchResponse = {
+      status: "timeout",
+      candidates: [],
+      message: "This is taking longer than expected. Please try again in a moment.",
+      requestId: "r1",
+      timingMs: 5000,
+    };
+    const onTryAgain = vi.fn();
+    render(response, vi.fn(), onTryAgain);
+
+    expect(container.querySelectorAll(".results-screen__card")).toHaveLength(0);
+    expect(container.textContent).toContain("This is taking longer than expected");
+    expect(container.textContent).toContain("This is taking longer than expected. Please try again in a moment.");
+
+    const tryAgainButton = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent === "Try again",
+    );
+    expect(tryAgainButton).toBeTruthy();
+    act(() => {
+      tryAgainButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onTryAgain).toHaveBeenCalledTimes(1);
+  });
+
+  it("'Try again' button is NOT shown on the other three message-only statuses (no_viable_option/out_of_service_area/invalid_input) -- only 'timeout' invites a retry", () => {
+    const statuses: DropOffSearchResponse["status"][] = ["no_viable_option", "out_of_service_area", "invalid_input"];
+    for (const status of statuses) {
+      render({ status, candidates: [], message: "some message", requestId: "r1", timingMs: 1 });
+      const tryAgainButton = Array.from(container.querySelectorAll("button")).find(
+        (b) => b.textContent === "Try again",
+      );
+      expect(tryAgainButton).toBeUndefined();
+      act(() => root.unmount());
+      container.remove();
+      container = document.createElement("div");
+      document.body.appendChild(container);
+    }
+  });
+
   it("out_of_service_area (defense-in-depth path): renders an empty state with the message, does not crash", () => {
     const response: DropOffSearchResponse = {
       status: "out_of_service_area",
@@ -193,7 +235,7 @@ describe("ResultsScreen -- ux-spec.md section 6, FR-010/FR-011/FR-012/FR-013", (
     expect(container.textContent).toContain("One or more required fields are missing");
   });
 
-  it("FR-014 deferral: the persistent safety/legality disclaimer is NOT rendered on any status this increment (INC-7 scope)", () => {
+  it("FR-014/REV-012: ResultsScreen itself never renders the disclaimer -- it is deliberately rendered one level up, in SearchFlow.tsx, as a sibling outside the ErrorBoundary that wraps this component (see SearchFlow.test.tsx for the resilience composition test)", () => {
     const statuses: DropOffSearchResponse[] = [
       {
         status: "ranked",

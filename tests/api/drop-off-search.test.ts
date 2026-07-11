@@ -4,6 +4,7 @@ import { createSessionToken } from "../../src/auth/session";
 import { createMock } from "../helpers/mockVercel";
 import { validEnv, validPaidTierEnv } from "../helpers/testEnv";
 import type { DropOffSearchResponse } from "../../src/search/types";
+import { DISCLAIMER_TEXT } from "../../src/search/types";
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -466,16 +467,157 @@ describe("POST /api/drop-off-search -- FR-006f, FR-010, FR-011, FR-012, FR-013",
     });
   });
 
-  describe("no disclaimer field yet (FR-014 deferred to INC-7, per design.md section 10)", () => {
-    it("the ranked response does not include a disclaimer field", async () => {
+  describe("FR-014 disclaimer field (INC-7, resolves REV-012)", () => {
+    it("ranked response includes the disclaimer, with the exact ux-spec.md section 6.2 copy", async () => {
       applyEnv(validEnv());
       vi.stubGlobal("fetch", makeFetchRouter({}));
 
       const { req, res, jsonBody } = createMock({ method: "POST", body: requestBody() });
       await handler(req, res);
 
-      const body = jsonBody() as Record<string, unknown>;
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("ranked");
+      expect(body.disclaimer).toBe(DISCLAIMER_TEXT);
+      expect(body.disclaimer).toBe(
+        "This is an estimated drop-off point only. Before stopping, confirm it's safe and legal to pull over here.",
+      );
+    });
+
+    it("fallback response includes the disclaimer", async () => {
+      applyEnv(validEnv());
+      vi.stubGlobal("fetch", makeFetchRouter({}));
+
+      const { req, res, jsonBody } = createMock({
+        method: "POST",
+        body: requestBody({ maxDetourMinutes: 0.001 }),
+      });
+      await handler(req, res);
+
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("fallback");
+      expect(body.disclaimer).toBe(DISCLAIMER_TEXT);
+    });
+
+    it("no_viable_option response omits the disclaimer (no candidates)", async () => {
+      applyEnv(validEnv());
+      vi.stubGlobal("fetch", makeFetchRouter({ transitBehavior: () => zeroResultsTransitBody() }));
+
+      const { req, res, jsonBody } = createMock({ method: "POST", body: requestBody() });
+      await handler(req, res);
+
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("no_viable_option");
       expect(body.disclaimer).toBeUndefined();
+    });
+
+    it("out_of_service_area response omits the disclaimer", async () => {
+      applyEnv(validEnv());
+      vi.stubGlobal("fetch", makeFetchRouter({}));
+
+      const { req, res, jsonBody } = createMock({
+        method: "POST",
+        body: requestBody({ driverDestination: LONDON_UK }),
+      });
+      await handler(req, res);
+
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("out_of_service_area");
+      expect(body.disclaimer).toBeUndefined();
+    });
+
+    it("invalid_input response omits the disclaimer", async () => {
+      applyEnv(validEnv());
+      const { start, driverDestination, maxDetourMinutes } = requestBody();
+      const { req, res, jsonBody } = createMock({
+        method: "POST",
+        body: { start, driverDestination, maxDetourMinutes },
+      });
+      await handler(req, res);
+
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("invalid_input");
+      expect(body.disclaimer).toBeUndefined();
+    });
+
+    it("timeout response omits the disclaimer (no candidates)", async () => {
+      applyEnv(validEnv({ RESPONSE_TIME_TARGET_SECONDS: "0.0001" }));
+      vi.stubGlobal("fetch", makeFetchRouter({}));
+
+      const { req, res, jsonBody } = createMock({ method: "POST", body: requestBody() });
+      await handler(req, res);
+
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("timeout");
+      expect(body.disclaimer).toBeUndefined();
+    });
+  });
+
+  describe("NFR-004 orchestration deadline / timeout status (INC-7, design.md section 6.3)", () => {
+    it("an already-elapsed RESPONSE_TIME_TARGET_SECONDS with a nonempty shortlist yields status:timeout, not no_viable_option", async () => {
+      applyEnv(validEnv({ RESPONSE_TIME_TARGET_SECONDS: "0.0001" }));
+      vi.stubGlobal("fetch", makeFetchRouter({}));
+
+      const { req, res, statusCode, jsonBody } = createMock({ method: "POST", body: requestBody() });
+      await handler(req, res);
+
+      expect(statusCode()).toBe(200);
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("timeout");
+      expect(body.candidates).toEqual([]);
+      expect(body.message).toBeTruthy();
+    });
+
+    it("a generous RESPONSE_TIME_TARGET_SECONDS with fast mocked providers still returns ranked, not timeout (no false positive)", async () => {
+      applyEnv(validEnv({ RESPONSE_TIME_TARGET_SECONDS: "30" }));
+      vi.stubGlobal("fetch", makeFetchRouter({}));
+
+      const { req, res, jsonBody } = createMock({ method: "POST", body: requestBody() });
+      await handler(req, res);
+
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("ranked");
+    });
+
+    it("configurability: a real provider timeout (REQUEST_TIMEOUT_MS) is enforced end-to-end through the handler -- a hung transit call is aborted and surfaces as a sanitized 502, not a hang or a leaked internal message", async () => {
+      applyEnv(validEnv({ REQUEST_TIMEOUT_MS: "30" }));
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string, init?: { signal?: AbortSignal }) => {
+          const u = new URL(url);
+          if (u.pathname.includes("/directions/") && u.searchParams.get("mode") === "transit") {
+            // Simulate a hung provider call: never resolves on its own, only
+            // rejects if the AbortSignal actually fires -- proves
+            // REQUEST_TIMEOUT_MS is a genuine abort, not just a theoretical
+            // bound.
+            return new Promise((_resolve, reject) => {
+              init?.signal?.addEventListener("abort", () => {
+                const err = new Error("aborted");
+                err.name = "AbortError";
+                reject(err);
+              });
+            });
+          }
+          return makeFetchRouter({}).getMockImplementation()!(url);
+        }),
+      );
+
+      const { req, res, statusCode, jsonBody } = createMock({ method: "POST", body: requestBody() });
+      await handler(req, res);
+
+      expect(statusCode()).toBe(502);
+      const body = jsonBody() as Record<string, unknown>;
+      expect(body.error).toBe("provider_error");
+      // Sanitized: no raw AbortError/timeout-internals string reaches the client.
+      expect(JSON.stringify(body)).not.toMatch(/abort/i);
+      expect(JSON.stringify(body)).not.toMatch(/timed out after/i);
+
+      // The detailed timeout message is logged server-side only.
+      const loggedMessages = consoleErrorSpy.mock.calls.map((call) => call.join(" ")).join("\n");
+      expect(loggedMessages).toMatch(/timed out after 30ms/i);
+
+      consoleErrorSpy.mockRestore();
     });
   });
 });

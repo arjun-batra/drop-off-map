@@ -30,6 +30,7 @@ describe("GET /api/config/public", () => {
       transitModesIncluded: "all",
       minGeocodeQueryLength: 3,
       geocodeDebounceMs: 300,
+      responseTimeTargetSeconds: 5,
     });
   });
 

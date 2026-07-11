@@ -134,4 +134,35 @@ describe("createGoogleDistanceMatrixService -- design.md section 4.3 step 6, FR-
     const url = new URL(fetchSpy.mock.calls[0][0] as string);
     expect(url.searchParams.get("key")).toBe("my-specific-configured-key");
   });
+
+  describe("REQUEST_TIMEOUT_MS enforcement (NFR-004, INC-7)", () => {
+    it("a hung provider call is genuinely aborted at timeoutMs and surfaces as RoutingProviderError('TIMEOUT')", async () => {
+      const fetchSpy = vi.fn(
+        (_url: string, init?: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              reject(err);
+            });
+          }),
+      );
+      const service = createGoogleDistanceMatrixService({
+        apiKey: "test-key",
+        fetchImpl: fetchSpy as never,
+        timeoutMs: 20,
+      });
+
+      await expect(service.getDurationsMinutes([START], CANDIDATES)).rejects.toMatchObject({
+        providerStatus: "TIMEOUT",
+      });
+    });
+
+    it("omitting timeoutMs is a passthrough: a normal call still resolves", async () => {
+      const fetchSpy = vi.fn(async () => matrixOk([[{ duration: 300 }]]));
+      const service = createGoogleDistanceMatrixService({ apiKey: "test-key", fetchImpl: fetchSpy });
+
+      await expect(service.getDurationsMinutes([START], [CANDIDATES[0]!])).resolves.toEqual([[5]]);
+    });
+  });
 });

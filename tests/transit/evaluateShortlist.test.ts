@@ -164,6 +164,105 @@ describe("evaluateShortlist -- design.md section 4.4 steps 10-13 orchestration",
     });
   });
 
+  describe("deadline / onSkippedDueToDeadline (design.md section 6.3, NFR-004, INC-7)", () => {
+    it("a deadline already in the past skips every candidate with zero real provider calls made", async () => {
+      let calls = 0;
+      const evaluator: TransitEvaluator = {
+        async evaluate() {
+          calls++;
+          return { ...OK_RESULT };
+        },
+      };
+      const shortlist = [candidate(0), candidate(1), candidate(2)];
+      let skippedCount = 0;
+
+      const results = await evaluateShortlist(
+        evaluator,
+        shortlist,
+        PASSENGER_DEST,
+        { transitModesIncluded: "all", providerConcurrencyLimit: 5 },
+        { deadline: new Date(Date.now() - 1000), onSkippedDueToDeadline: () => skippedCount++ },
+      );
+
+      expect(calls).toBe(0);
+      expect(skippedCount).toBe(3);
+      for (const result of results) {
+        expect(result.noTransitAvailable).toBe(true);
+        expect(result.walkTimeMinutes).toBe(0);
+        expect(result.waitTimeMinutes).toBe(0);
+        expect(result.transitTimeMinutes).toBe(0);
+        expect(result.passengerTotalTimeMinutes).toBe(0);
+      }
+    });
+
+    it("a deadline exceeded partway through a concurrency-limited fan-out yields SOME completed and SOME skipped candidates (graceful partial degradation)", async () => {
+      const evaluator: TransitEvaluator = {
+        async evaluate() {
+          await delay(15);
+          return { ...OK_RESULT };
+        },
+      };
+      const shortlist = Array.from({ length: 6 }, (_, i) => candidate(i));
+      let skippedCount = 0;
+
+      const results = await evaluateShortlist(
+        evaluator,
+        shortlist,
+        PASSENGER_DEST,
+        { transitModesIncluded: "all", providerConcurrencyLimit: 2 },
+        { deadline: new Date(Date.now() + 20), onSkippedDueToDeadline: () => skippedCount++ },
+      );
+
+      const completed = results.filter((r) => !r.noTransitAvailable);
+      const skipped = results.filter((r) => r.noTransitAvailable);
+      expect(completed.length).toBeGreaterThan(0);
+      expect(skipped.length).toBeGreaterThan(0);
+      expect(skippedCount).toBe(skipped.length);
+    });
+
+    it("a deadline far in the future never skips any candidate", async () => {
+      let calls = 0;
+      const evaluator: TransitEvaluator = {
+        async evaluate() {
+          calls++;
+          return { ...OK_RESULT };
+        },
+      };
+      const shortlist = [candidate(0), candidate(1)];
+      let skippedCount = 0;
+
+      await evaluateShortlist(
+        evaluator,
+        shortlist,
+        PASSENGER_DEST,
+        { transitModesIncluded: "all", providerConcurrencyLimit: 5 },
+        { deadline: new Date(Date.now() + 60_000), onSkippedDueToDeadline: () => skippedCount++ },
+      );
+
+      expect(calls).toBe(2);
+      expect(skippedCount).toBe(0);
+    });
+
+    it("omitting deadline entirely is backward compatible -- no skipping behavior at all", async () => {
+      let calls = 0;
+      const evaluator: TransitEvaluator = {
+        async evaluate() {
+          calls++;
+          return { ...OK_RESULT };
+        },
+      };
+      const shortlist = [candidate(0), candidate(1)];
+
+      const results = await evaluateShortlist(evaluator, shortlist, PASSENGER_DEST, {
+        transitModesIncluded: "all",
+        providerConcurrencyLimit: 5,
+      });
+
+      expect(calls).toBe(2);
+      expect(results.every((r) => !r.noTransitAvailable)).toBe(true);
+    });
+  });
+
   it("empty shortlist -> empty result, no provider calls", async () => {
     let calls = 0;
     const evaluator: TransitEvaluator = {

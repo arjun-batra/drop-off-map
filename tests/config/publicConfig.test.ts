@@ -4,7 +4,7 @@ import { toPublicConfig } from "../../src/config/publicConfig";
 import { validPaidTierEnv } from "../helpers/testEnv";
 
 describe("toPublicConfig", () => {
-  it("returns exactly the 7 fields design.md section 5.2 specifies (5 original + minGeocodeQueryLength/geocodeDebounceMs per REV-006/REV-007), no more no less", () => {
+  it("returns exactly the 8 fields design.md section 5.2 specifies (5 original + minGeocodeQueryLength/geocodeDebounceMs per REV-006/REV-007 + responseTimeTargetSeconds per INC-7), no more no less", () => {
     const config = loadConfig(validPaidTierEnv("super-secret-password"));
     const publicConfig = toPublicConfig(config);
     expect(Object.keys(publicConfig).sort()).toEqual(
@@ -16,6 +16,7 @@ describe("toPublicConfig", () => {
         "transitModesIncluded",
         "minGeocodeQueryLength",
         "geocodeDebounceMs",
+        "responseTimeTargetSeconds",
       ].sort(),
     );
   });
@@ -27,6 +28,12 @@ describe("toPublicConfig", () => {
     const publicConfig = toPublicConfig(config);
     expect(publicConfig.minGeocodeQueryLength).toBe(5);
     expect(publicConfig.geocodeDebounceMs).toBe(750);
+  });
+
+  it("configurability: reflects a changed RESPONSE_TIME_TARGET_SECONDS rather than a fixed value (INC-7, NFR-004)", () => {
+    const config = loadConfig(validPaidTierEnv("super-secret-password", { RESPONSE_TIME_TARGET_SECONDS: "9" }));
+    const publicConfig = toPublicConfig(config);
+    expect(publicConfig.responseTimeTargetSeconds).toBe(9);
   });
 
   it("never includes mapApiKey or paidTierAccessPassword, even serialized", () => {

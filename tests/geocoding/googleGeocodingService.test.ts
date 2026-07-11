@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { GeocodingProviderError } from "../../src/geocoding/errors";
 import { createGoogleGeocodingService } from "../../src/geocoding/googleGeocodingService";
 
@@ -145,6 +145,33 @@ describe("createGoogleGeocodingService -- FR-003, FR-015, provider integration",
       await expect(service.reverseGeocode({ lat: 0, lng: 0 })).rejects.toMatchObject({
         providerStatus: "ZERO_RESULTS",
       });
+    });
+  });
+
+  describe("REQUEST_TIMEOUT_MS enforcement (NFR-004, INC-7)", () => {
+    it("a hung provider call is genuinely aborted at timeoutMs and surfaces as GeocodingProviderError('TIMEOUT')", async () => {
+      const fetchImpl = vi.fn(
+        (_url: string, init?: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              reject(err);
+            });
+          }),
+      );
+      const service = createGoogleGeocodingService({ apiKey: "test-key", fetchImpl: fetchImpl as never, timeoutMs: 20 });
+
+      await expect(service.resolve("123 Main St")).rejects.toMatchObject({ providerStatus: "TIMEOUT" });
+    });
+
+    it("omitting timeoutMs is a passthrough: a normal call still resolves", async () => {
+      const service = createGoogleGeocodingService({
+        apiKey: "test-key",
+        fetchImpl: fakeFetch({ ok: true, status: 200, json: async () => ({ status: "ZERO_RESULTS", results: [] }) }),
+      });
+
+      await expect(service.resolve("123 Main St")).resolves.toEqual([]);
     });
   });
 });
