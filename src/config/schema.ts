@@ -45,6 +45,25 @@ export interface AppConfig {
    * code, per the project's no-hardcoded-tunables rule.
    */
   sessionLifetimeSeconds: number;
+  /**
+   * INC-9 (design.md section 3.1a/10): Leaflet tile-layer URL template for
+   * the optional map view (e.g. `https://{s}.example.com/{z}/{x}/{y}.png`,
+   * with any provider API key already embedded in the string by the
+   * operator if their chosen tile provider requires one). Deliberately not
+   * hardcoded to any single vendor -- see docs/handoff.md's INC-9 section
+   * for the tile-provider choice/rationale and how to switch providers by
+   * changing only this env var, no code change. Non-secret: this URL is
+   * requested directly by the browser (Leaflet has no server-side proxy),
+   * so it is exposed via PublicConfig the same way GEOGRAPHIC_CENTER is.
+   */
+  mapTileUrlTemplate: string;
+  /**
+   * INC-9: attribution text/HTML required by OSM-family tile providers'
+   * license terms, rendered in Leaflet's built-in attribution control.
+   * Configurable (not hardcoded) because it must match whichever tile
+   * provider `mapTileUrlTemplate` points at.
+   */
+  mapTileAttribution: string;
 }
 
 /**
@@ -69,4 +88,8 @@ export interface PublicConfig {
    * hardcoded threshold.
    */
   responseTimeTargetSeconds: number;
+  /** INC-9: see AppConfig's field of the same name -- needed client-side so Leaflet can request tiles directly. */
+  mapTileUrlTemplate: string;
+  /** INC-9: see AppConfig's field of the same name. */
+  mapTileAttribution: string;
 }
