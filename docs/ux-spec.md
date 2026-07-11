@@ -219,7 +219,15 @@ Each of the three fields is identical in behavior:
 | Geolocation in progress | Field shows a small inline spinner in place of the check icon | "Finding your location…" (`type-body-small`, `color-text-secondary`, under the field) |
 | Geolocation denied/unavailable | Field remains editable, unchanged border | Inline `type-body-small`, `color-text-secondary`, under the field: "Location access wasn't available. Please type an address instead." |
 | Unresolvable address (FR-003) | `color-danger-border` | Inline `type-body-small`, `color-danger-text`, under the field: "We couldn't find that address. Try a more specific address or a nearby cross street." |
+| Lookup failed (provider/network error) | `color-danger-border` | Inline `type-body-small`, `color-danger-text`, under the field: "We couldn't check that address right now. Please try again." |
 | Outside service area (FR-004) | `color-danger-border` | Inline `type-body-small`, `color-danger-text`, under the field: "This location is outside our service area (within `GEOGRAPHIC_RADIUS_KM` of `GEOGRAPHIC_CENTER`). We don't support this area yet." — copy renders with the actual configured radius/center substituted, e.g. "within 200 km of Toronto." |
+
+**"Lookup failed" vs. "Unresolvable address" — these are deliberately distinct states, not variants of the same copy:**
+- *Unresolvable address* means the lookup completed and the provider affirmatively could not match the typed text to any address (a data/input problem — the user's text needs to change).
+- *Lookup failed* means the lookup itself never completed — a network error or a provider-side failure (timeout, outage, malformed response) — so nothing has been confirmed or denied about the address itself. This is a mechanism failure, not a judgment about what the user typed, so the copy must not suggest the address is bad and must invite a retry instead of a rewrite.
+- This state applies identically to all three location fields (start, driver's destination, passenger's destination) — it is a property of the geocoding lookup mechanism shared by all three (§4.1 preamble), not of any one field's business logic (e.g., the radius check, which only applies to two of the three fields, is unrelated to this state).
+- Behavior: field border and icon match the other danger states above; the field remains editable. Retyping or re-selecting a suggestion re-triggers a new lookup attempt (same retry path as any other field edit — no separate "Retry" button is introduced). "Use my current location" retries the same way if the failure occurred during reverse geocoding.
+- This state must never be silently swallowed into a generic/blank field or into the "Unresolvable address" copy — doing so would misrepresent a mechanism failure as an address problem and violates the "never fail silently" principle (§0).
 
 Validation timing: address resolution and radius checks run as soon as a suggestion is selected or "use current location" completes — not deferred to submit — so the user sees the specific field's problem immediately, before trying to submit.
 
@@ -450,3 +458,12 @@ All prior open questions have been resolved by the user (see below). One item re
 3. ~~Detour-input sanity ceiling~~ — resolved: no upper bound, plain numeric input (§4.2).
 4. ~~Password gate throttling~~ — resolved: no lockout/rate-limiting, simple inline error only (§3).
 5. ~~Product naming/branding~~ — resolved: "DropSpot" selected and applied throughout this spec (§0.0).
+6. ~~Undocumented `provider_error` field state (REV-008)~~ — resolved: formally added to §4.1's field-states table as "Lookup failed (provider/network error)"; see Changelog below.
+
+---
+
+## 10. Changelog
+
+| Date | Change |
+|---|---|
+| 2026-07-11 | Added "Lookup failed (provider/network error)" to §4.1's field-states table, closing the traceability gap flagged in review-log.md REV-008. This documents the state dev added during INC-2 for when a geocoding lookup itself fails to complete (network/provider error), distinct from "Unresolvable address" (lookup completed, no match found). Copy: "We couldn't check that address right now. Please try again." Applies to all three location fields (lookup-mechanism failure, not field-specific business logic). User confirmed keeping this addition. |
