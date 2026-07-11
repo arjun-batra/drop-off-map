@@ -12,24 +12,25 @@ This app has a user-facing UI (address inputs, results cards, warnings, possibly
 
 ---
 
-## 1. Open questions (must be resolved before/at Gate 3)
+## 1. Design decisions log (resolved 2026-07-11)
 
-These are **not** silently decided below; each is flagged to the appropriate owner per the no-inference rule.
+All open questions raised in the initial draft have been resolved by the user (via pm/orchestrator, 2026-07-11). This design is written against the resolved answers below; no section is provisional any longer except DQ-4, which remains a cross-agent (release) dependency rather than a design blocker.
 
-### 1.1 To pm → user (business/requirements ambiguity)
+### 1.1 Resolved — business/requirements ambiguity (was routed to pm → user)
 
-- **DQ-1 (FR-004 scope — which locations get the radius check?)**: FR-004 says "If the start or destination point falls outside the configured geographic service radius... the system shall block the request." The app has **three** location inputs (start, driver's destination, passenger's destination — FR-001), but FR-004's text only says "destination" (singular). Does the radius check apply to:
-  (a) start + driver's destination only, or
-  (b) all three inputs, including the passenger's destination (which could plausibly be far outside the 200km zone even if the driver's own trip is local)?
-  This changes both validation logic and UX messaging. **Design below assumes (b) — all three locations must be in-radius — as the more conservative/safer reading, pending explicit confirmation.** This assumption is called out in section 5.2 and must be confirmed or corrected before INC-2 is built.
+- **DQ-1 (FR-004 scope — which locations get the radius check?) — RESOLVED**: Only **start + driver's destination** are subject to the `GEOGRAPHIC_RADIUS_KM` check. The **passenger's destination is explicitly exempt** — it may be any distance from Toronto (e.g., the passenger's own transit journey could plausibly continue well beyond the 200km service circle; only the driver's drivable leg is constrained). This is now reflected as final logic in sections 4.1, 5.2, and INC-2 below (no longer an assumption).
 
-### 1.2 To user directly (architecture/cost trade-off — routed via pm per pipeline)
+### 1.2 Resolved — architecture/cost trade-offs (was routed to user directly)
 
-- **DQ-2 (Provider choice + cost exposure)**: See section 3 for the full trade-off. Recommendation is Google Maps Platform as the sole provider. Given this app's call pattern (multiple provider calls per single user submission — see section 4.5), an illustrative estimate is **~2,000-2,500 free user submissions/month** before the $200/mo free credit is exhausted and pay-as-you-go billing begins (approximate, based on publicly listed per-1000-request pricing at time of writing — **must be re-verified against the current Google Cloud pricing page before launch**, as these prices change). Needs explicit user go-ahead: accept Google Maps Platform as sole provider, accept this free-tier ceiling estimate, and confirm no additional dollar cost ceiling/billing alert is required beyond the existing `APP_MODE` manual switch (NFR-007 already says no automated action is required — but idea-brief risk #2 asked for an explicit cost-ceiling decision, which this resolves only if the user agrees).
-- **DQ-3 (NFR-004 feasibility — 5 second target)**: See section 6 for full analysis. Verdict: **5 seconds is achievable as a typical/median case with the parallelized batch design below, but is not a hard guarantee under tail latency, provider slowness, or provider throttling** (compounded by NFR-007's explicit decision not to rate-limit). Recommendation: treat 5s as a soft target with a hard per-request orchestration timeout and a graceful degraded response beyond that (section 6.3). **Needs explicit user sign-off** that this interpretation of NFR-004 is acceptable, per NFR-004's own requirement to escalate if the target isn't cleanly achievable.
-- **DQ-4 (Billing alerting / retention ops)**: The $ cost ceiling and any billing-alert configuration is really an operational/runbook concern, not a design mechanism — flagging so the orchestrator ensures **release** picks this up in `docs/runbook.md` before INC-1 (this design only builds the `APP_MODE` toggle mechanism itself, per FR-017; it does not implement automatic cost-based switching, which is out of scope per FR-017/NFR-007).
+- **DQ-2 (Provider choice + cost exposure) — CONFIRMED**: Google Maps Platform accepted as sole provider; the ~2,000-2,500 free-submissions/month illustrative estimate (section 3) is accepted as-is by the user, with the standing caveat (unchanged) that exact Google Cloud pricing must be re-verified before launch since list prices/credit amounts change over time.
+- **DQ-3 (NFR-004 feasibility — 5 second target) — CONFIRMED**: 5 seconds is a soft target, not a hard guarantee. Per-call timeout + graceful "taking longer" degraded state (section 6.3) is the accepted resolution, as proposed.
+- **DQ-4 (Billing alerting / retention ops)**: Still a cross-agent flag, not a design blocker — remains the release agent's responsibility to pick up in `docs/runbook.md` before INC-1 (this design only builds the `APP_MODE` toggle mechanism itself, per FR-017; automatic cost-based switching stays out of scope per FR-017/NFR-007).
 
-Until DQ-1 through DQ-3 are resolved, treat sections 3, 5.2, and 6 as provisional.
+### 1.3 Additional decisions from the user (2026-07-11)
+
+- **No upper bound on `maxDetourMinutes`**: the user explicitly does not want a sanity-check ceiling on the detour-minutes input. `FR-002`'s validation is limited to "numeric and positive" — no configured or hardcoded maximum. This is intentional, not a gap, and is called out explicitly in INC-3 below so QA/reviewer don't flag it as a missing bound.
+- **Visual map/route view**: approved as an increment, but conditionally — only if it does not increase provider API cost. See section 3.1 (provider capability re-confirmation) and the new INC-9 in section 10.
+- **Reverse-geocoded labels for candidate drop-off points**: confirmed feasible via Google's Geocoding API; see section 3.1 for the capability confirmation and constraints, relayed to designer.
 
 ---
 
@@ -86,6 +87,22 @@ Covers Geocoding API + Places Autocomplete (FR-015), Directions API driving mode
 - **Paid tier** (`APP_MODE=paid_tier`, password-gated per FR-016/017): unlocks unlimited pay-as-you-go scaling beyond the free credit (no hard ceiling other than a billing budget the operator sets in Google Cloud Console — this budget/alert setup is a release/runbook task, not a design mechanism, per DQ-4). The password gate itself is also a natural cost-control lever: gating the whole app behind a shared password inherently limits audience size, which is exactly the intended use of `APP_MODE` per FR-016's rationale.
 - **Future alternative (not v1)**: self-hosted OpenTripPlanner2 (using free/open Toronto-region GTFS + GTFS-RT feeds) for the transit leg, paired with a traffic-aware driving provider (Google, TomTom, or Mapbox) for the driving leg only. This would reduce transit-call cost to near-zero but requires standing up and operating a GTFS-ingesting server (new infra, new maintenance burden — feed refresh jobs, agency onboarding, uptime) that is out of proportion to v1 scope. Documented here as the answer if free-tier cost becomes a real problem post-launch, not something to build now.
 
+### 3.1 Two follow-up capability questions, confirmed (relay to designer)
+
+**(a) Can a visual map/route view be added without increasing provider API cost?**
+
+Yes, if built the way this design already specifies (section 2): render with **Leaflet + OpenStreetMap-family tiles**, not Google's Maps JavaScript API.
+- Google's Maps Platform bills map rendering (the "Dynamic Maps"/Maps JavaScript API map-load SKU) **separately from, but out of the same shared monthly credit pool as**, the Directions/Distance Matrix/Geocoding calls already in scope. The $200/month credit is a single pooled credit across all Maps Platform SKUs, not a separate allowance per SKU — so adding Google's JS map widget would draw down the *same* budget already being spent on routing/transit calls, directly increasing total provider cost per session. **This fails the user's stated condition** and should not be built.
+- Leaflet (a free, open-source JS mapping library) rendering OpenStreetMap-family tiles avoids Google billing entirely for the visual map itself, and can render the route polyline and candidate markers using data **already fetched** by calls already in scope (the direct-route Directions call from INC-3 returns the polyline; candidate points and rankings are already computed by INC-4/INC-6) — no new billed provider call is triggered by adding the map view. This satisfies the user's condition.
+- **One caveat to flag to designer/release**: OpenStreetMap's own demo tile server (`tile.openstreetmap.org`) has a usage policy that discourages direct production traffic at any real volume and can rate-limit/block an app's IP under load. For a public-facing app, recommend a free-tier managed tile provider instead (e.g., MapTiler's free plan, or Stadia Maps' free tier for low-volume/non-commercial use) rather than hitting raw OSM tile servers directly. This is a separate, typically-free, non-Google account — it does not touch the Google Maps Platform billing pool the user is trying to protect, but it is a second small provider dependency worth designer/release being aware of when scoping INC-9.
+
+**(b) Can Google's provider return a human-readable label for an arbitrary point along the route (for candidate card headers)?**
+
+Yes, via the **Geocoding API's reverse-geocoding capability** (`reverseGeocode(point)` in the `GeocodingService` interface, section 5.1) — it accepts an arbitrary lat/lng (not just a registered place) and returns the nearest matchable address/road-segment label. Two constraints designer should account for in ux-spec.md:
+- The label is the **nearest matchable address or road segment**, not a guaranteed "you are standing exactly here" name — for a candidate point on a stretch of road with no exact civic address, expect something like a nearby cross-street or road name rather than a precise street number. Card copy should be phrased accordingly (e.g., "near ___" rather than implying an exact address match).
+- In sparser areas toward the edge of the 200km radius, reverse geocoding may only resolve to a coarser locality-level label (e.g., town/neighbourhood name) rather than a street-level one — an inherent data-density limitation, not a bug.
+- **Cost impact**: generating a label for each of the final returned candidates (bounded by `MAX_CANDIDATES_RETURNED`, default 3, or 1 for the fallback case) adds up to a few more Geocoding calls per submission — immaterial to the section 3 cost estimate (still within the ~14-17 calls/submission range). Labels are generated only for the small set of *final* candidates actually shown to the user, not for the full raw-candidate or transit-shortlist pool, to avoid unnecessary cost.
+
 ---
 
 ## 4. Algorithm: candidate generation, evaluation, ranking, fallback
@@ -93,7 +110,7 @@ Covers Geocoding API + Places Autocomplete (FR-015), Directions API driving mode
 This is the core of FR-005 through FR-011. Designed in two phases specifically to keep both **cost** (provider calls) and **latency** (NFR-004) bounded, since evaluating live transit for every possible point along a route is neither affordable nor fast.
 
 ### 4.1 Phase 0 — Inputs resolved, direct baseline computed
-1. Resolve `start`, `driverDestination`, `passengerDestination` to lat/lng (already done client-side via `/api/geocode` during input, or re-validated server-side — see section 5.1). Validate each against the service radius (FR-004, NFR-006 — pending DQ-1 on scope).
+1. Resolve `start`, `driverDestination`, `passengerDestination` to lat/lng (already done client-side via `/api/geocode` during input, or re-validated server-side — see section 5.1). Validate **`start` and `driverDestination` only** against the service radius (FR-004, NFR-006 — resolved DQ-1: the radius check does not apply to `passengerDestination`, which may be any distance away).
 2. Call provider Directions (driving, `departure_time=now`, traffic-aware) for `start -> driverDestination`. This yields:
    - `directDriveTimeMinutes` (the FR-006b baseline, "no stop"),
    - the route polyline, decoded into an ordered list of `{lat, lng, cumulativeDistanceMeters}` vertices.
