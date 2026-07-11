@@ -40,10 +40,16 @@ afterEach(() => {
   delete global.navigator.geolocation;
 });
 
-function render(config: PublicConfig = baseConfig) {
+let onSubmitSpy: ReturnType<typeof vi.fn>;
+
+function render(
+  config: PublicConfig = baseConfig,
+  initialValues?: import("../../src/frontend/components/InputScreen").InputScreenInitialValues,
+) {
+  onSubmitSpy = vi.fn();
   act(() => {
     root = createRoot(container);
-    root.render(<InputScreen config={config} />);
+    root.render(<InputScreen config={config} initialValues={initialValues} onSubmit={onSubmitSpy} />);
   });
 }
 
@@ -449,16 +455,106 @@ describe("InputScreen -- FR-001, FR-003, FR-004, FR-015, NFR-006", () => {
     });
   });
 
-  describe("INC-3 scope boundary: CTA remains a non-functional placeholder", () => {
-    it("the 'Find drop-off points' button is still disabled regardless of detour field validity (search wiring is INC-4/INC-6 scope)", () => {
+  describe("INC-6: CTA is wired for real -- enabled only once all 3 locations + detour are valid", () => {
+    function cta(): HTMLButtonElement {
+      return Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent === "Find drop-off points",
+      ) as HTMLButtonElement;
+    }
+
+    it("disabled with a valid detour but no locations resolved", () => {
       render();
       const input = container.querySelector("#max-detour-input") as HTMLInputElement;
       act(() => setValue(input, "15"));
+      expect(cta().disabled).toBe(true);
+    });
 
-      const cta = Array.from(container.querySelectorAll("button")).find(
-        (button) => button.textContent === "Find drop-off points",
-      ) as HTMLButtonElement;
-      expect(cta.disabled).toBe(true);
+    it("disabled once all 3 locations resolve but the detour field is still invalid/empty", async () => {
+      mockGeocodeFetch({ "456 Bay": [{ lat: NEARBY_RESULT.lat, lng: NEARBY_RESULT.lng, label: NEARBY_RESULT.label }] });
+      render();
+
+      for (const label of ["Your start point", "Your destination", "Passenger's destination"]) {
+        const input = fieldInput(label);
+        act(() => setValue(input, "456 Bay"));
+        await advance(300);
+        await flush();
+        const option = container.querySelector('li[role="option"]') as HTMLElement;
+        act(() => option.dispatchEvent(new Event("mousedown", { bubbles: true, cancelable: true })));
+        await flush();
+      }
+
+      expect(cta().disabled).toBe(true); // detour field still empty
+    });
+
+    it("enabled once all 3 locations resolve AND the detour field is valid; clicking it calls onSubmit with the exact DropOffSearchRequest shape", async () => {
+      mockGeocodeFetch({ "456 Bay": [{ lat: NEARBY_RESULT.lat, lng: NEARBY_RESULT.lng, label: NEARBY_RESULT.label }] });
+      render();
+
+      for (const label of ["Your start point", "Your destination", "Passenger's destination"]) {
+        const input = fieldInput(label);
+        act(() => setValue(input, "456 Bay"));
+        await advance(300);
+        await flush();
+        const option = container.querySelector('li[role="option"]') as HTMLElement;
+        act(() => option.dispatchEvent(new Event("mousedown", { bubbles: true, cancelable: true })));
+        await flush();
+      }
+
+      const detourInput = container.querySelector("#max-detour-input") as HTMLInputElement;
+      act(() => setValue(detourInput, "15"));
+
+      expect(cta().disabled).toBe(false);
+
+      act(() => cta().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+      expect(onSubmitSpy).toHaveBeenCalledTimes(1);
+      const request = onSubmitSpy.mock.calls[0][0];
+      expect(request).toEqual({
+        start: { lat: NEARBY_RESULT.lat, lng: NEARBY_RESULT.lng, label: NEARBY_RESULT.label },
+        driverDestination: { lat: NEARBY_RESULT.lat, lng: NEARBY_RESULT.lng, label: NEARBY_RESULT.label },
+        passengerDestination: { lat: NEARBY_RESULT.lat, lng: NEARBY_RESULT.lng, label: NEARBY_RESULT.label },
+        maxDetourMinutes: 15,
+      });
+    });
+
+    it("becomes disabled again if a previously-resolved field is edited back to an unresolved value", async () => {
+      mockGeocodeFetch({ "456 Bay": [{ lat: NEARBY_RESULT.lat, lng: NEARBY_RESULT.lng, label: NEARBY_RESULT.label }] });
+      render();
+
+      for (const label of ["Your start point", "Your destination", "Passenger's destination"]) {
+        const input = fieldInput(label);
+        act(() => setValue(input, "456 Bay"));
+        await advance(300);
+        await flush();
+        const option = container.querySelector('li[role="option"]') as HTMLElement;
+        act(() => option.dispatchEvent(new Event("mousedown", { bubbles: true, cancelable: true })));
+        await flush();
+      }
+      const detourInput = container.querySelector("#max-detour-input") as HTMLInputElement;
+      act(() => setValue(detourInput, "15"));
+      expect(cta().disabled).toBe(false);
+
+      // Edit the start field's text after it was resolved -- it should no
+      // longer count as a valid resolved location until re-resolved.
+      const startInput = fieldInput("Your start point");
+      act(() => setValue(startInput, "something else entirely"));
+      await flush();
+
+      expect(cta().disabled).toBe(true);
+    });
+
+    it("initialValues (Edit search / Try again re-open) seeds all fields as already-resolved and enables the CTA immediately", () => {
+      render(baseConfig, {
+        start: NEARBY_RESULT,
+        driverDestination: NEARBY_RESULT,
+        passengerDestination: NEARBY_RESULT,
+        maxDetourMinutesText: "20",
+      });
+
+      expect(cta().disabled).toBe(false);
+      expect(fieldInput("Your start point").value).toBe(NEARBY_RESULT.label);
+      const detourInput = container.querySelector("#max-detour-input") as HTMLInputElement;
+      expect(detourInput.value).toBe("20");
     });
   });
 
