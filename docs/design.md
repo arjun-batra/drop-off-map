@@ -1,6 +1,6 @@
 # Design: Drop-off Point Optimizer
 
-Status: **DRAFT — pending Gate 3 (user approval)**
+Status: **DRAFT — finalized, ready for Gate 3 (user approval)**. All open questions from the initial draft (DQ-1, DQ-2, DQ-3) resolved by the user 2026-07-11; see section 1.
 Source: `docs/requirements.md` (FINAL, Gate 2 passed 2026-07-10), `docs/idea-brief.md` (approved, Gate 1 passed 2026-07-10)
 Owner: tech-lead. Do not edit outside this agent.
 
@@ -158,7 +158,7 @@ This phase costs exactly `2 * ceil(rawCandidateCount / DISTANCE_MATRIX_BATCH_SIZ
     - Return that one candidate with `status: "fallback"` and a warning that it exceeds the requested detour threshold (FR-011, displayed per FR-013/FR-014).
 16. If **no** evaluated candidate has a viable transit itinerary at all (every shortlisted candidate is `noTransitAvailable=true`), return `status: "no_viable_option"` with a clear message (FR-012), no candidates.
 
-**Provider call accounting per user submission** (used for the cost estimate in section 3 and the latency analysis in section 6): 3 geocodes (if not already client-resolved) + 1 direct route + up to `2 * ceil(MAX_RAW_CANDIDATES_SAMPLED / DISTANCE_MATRIX_BATCH_SIZE)` (default: 2, since 20 ≤ 25) + up to `MAX_TRANSIT_EVALUATIONS_PER_REQUEST` (default 8) = **~14 calls per submission** at default config.
+**Provider call accounting per user submission** (used for the cost estimate in section 3 and the latency analysis in section 6): 3 geocodes (if not already client-resolved) + 1 direct route + up to `2 * ceil(MAX_RAW_CANDIDATES_SAMPLED / DISTANCE_MATRIX_BATCH_SIZE)` (default: 2, since 20 ≤ 25) + up to `MAX_TRANSIT_EVALUATIONS_PER_REQUEST` (default 8) + up to `MAX_CANDIDATES_RETURNED` (default 3, or 1 for a fallback result) reverse-geocode calls for final candidate labels (section 3.1b) = **~14-17 calls per submission** at default config.
 
 ---
 
@@ -189,7 +189,10 @@ interface AppConfig {
 // geocodingService.ts
 interface GeocodingService {
   resolve(query: string): Promise<GeoResult[]>;
-  reverseGeocode(point: LatLng): Promise<string>; // label only, for "use my location"
+  reverseGeocode(point: LatLng): Promise<string>; // label only; used for "use my location" AND
+                                                    // final-candidate card headers (section 3.1b) —
+                                                    // call only for the small set of returned
+                                                    // candidates, never the full raw-candidate pool
 }
 interface GeoResult { lat: number; lng: number; label: string; placeId?: string }
 
@@ -276,6 +279,7 @@ interface AuthGate {
     candidates: Array<{
       rank: number;
       location: { lat: number; lng: number };
+      label: string;          // reverse-geocoded, nearest-match label (section 3.1b) — for card headers
       routeOrderIndex: number;
       driveTimeToDropoffMinutes: number;
       detourMinutes: number;
@@ -294,7 +298,7 @@ interface AuthGate {
   }
   ```
 
-Validation ordering inside `/api/drop-off-search` (fail fast, cheapest checks first, per FR-003/FR-004): (1) shape/type validation of the 4 inputs → `invalid_input`; (2) radius check on all locations in scope per DQ-1 → `out_of_service_area`; (3) proceed to section 4's algorithm.
+Validation ordering inside `/api/drop-off-search` (fail fast, cheapest checks first, per FR-003/FR-004): (1) shape/type validation of the 4 inputs → `invalid_input`; (2) radius check on `start` and `driverDestination` only (resolved DQ-1 — `passengerDestination` is exempt) → `out_of_service_area`; (3) proceed to section 4's algorithm.
 
 ---
 
@@ -371,7 +375,7 @@ Required states the UI must be able to render, driven directly by `DropOffSearch
 
 ---
 
-## 10. Increment plan (INC-1..8)
+## 10. Increment plan (INC-1..8, plus conditional INC-9)
 
 Prerequisite (not a numbered increment, owned by release per pipeline): **CI/CD pipeline + hosting + `docs/runbook.md` established before INC-1 begins**, since this app is public-facing (NFR-005). Includes: chosen hosting platform, environment-variable injection mechanism for section 7's config, HTTPS, and the billing-alert/cost-ceiling ops concern from DQ-4.
 
@@ -387,16 +391,16 @@ Each increment below is independently testable by QA and does not depend on anyt
 
 ### INC-2: Location input, geocoding, radius validation
 - `GeocodingService`, `/api/geocode` endpoint, "use my current location" (browser geolocation + reverse-geocode label).
-- `RadiusValidator` + `out_of_service_area` response path (FR-004 — **pending DQ-1 resolution on scope**, build against whichever scope is confirmed by Gate 3).
+- `RadiusValidator` + `out_of_service_area` response path (FR-004 — resolved DQ-1: radius check applies to **`start` and `driverDestination` only**; `passengerDestination` is never radius-checked and should be accepted at any distance).
 - Invalid-address error handling (FR-003).
 - **Covers**: FR-001, FR-003, FR-004, FR-015, NFR-006, config keys `GEOGRAPHIC_CENTER`/`GEOGRAPHIC_RADIUS_KM`.
-- **QA can test**: valid/invalid addresses, current-location flow, in-radius/out-of-radius combinations for all three input fields per the confirmed DQ-1 scope, all without any driving/transit computation yet.
+- **QA can test**: valid/invalid addresses, current-location flow, in-radius/out-of-radius combinations for `start`/`driverDestination`, and confirmation that a far-away `passengerDestination` is accepted without a radius error, all without any driving/transit computation yet.
 
 ### INC-3: Direct driving route + detour threshold input
-- `RoutingService.getDirectRoute` (live traffic), `maxDetourMinutes` input field (FR-002) with numeric/positive validation.
+- `RoutingService.getDirectRoute` (live traffic), `maxDetourMinutes` input field (FR-002) with numeric/positive validation **and explicitly no upper bound** (user decision, section 1.3 — do not add a sanity-check ceiling).
 - Expose direct drive time (dev/QA-visible, not yet the final feature) to validate live-traffic integration end to end.
 - **Covers**: FR-002, FR-006a, part of FR-006b (baseline), FR-007.
-- **QA can test**: live traffic is reflected (e.g., comparing times at different times of day, or against the provider's own consumer app), detour-minutes field validation.
+- **QA can test**: live traffic is reflected (e.g., comparing times at different times of day, or against the provider's own consumer app), detour-minutes field accepts any positive number including very large values (confirm no hidden max is enforced).
 
 ### INC-4: Candidate generation + batched detour evaluation
 - `CandidateGenerator.sampleAlongPolyline`, `DetourEvaluator.batchEvaluate` (Distance Matrix batching), `qualifies` flag computation.
@@ -411,8 +415,9 @@ Each increment below is independently testable by QA and does not depend on anyt
 
 ### INC-6: Ranking, tie-break, fallback, full results output
 - `Ranker.rank` implementing FR-010's sort + tie-break, FR-011's fallback, FR-012's no-viable-option path; full `DropOffSearchResponse` wiring; frontend results cards for `ranked`/`fallback`/`no_viable_option` states (FR-013).
+- Reverse-geocoded `label` field (section 3.1b) generated only for the final returned candidates (bounded by `MAX_CANDIDATES_RETURNED` or the single fallback candidate), for card headers.
 - **Covers**: FR-006f, FR-010, FR-011, FR-012, FR-013, config key `MAX_CANDIDATES_RETURNED`.
-- **QA can test**: all three response-status scenarios reproducible with controlled/mocked provider responses (normal ranked case, fallback-with-warning case, zero-viable-option case), tie-break behavior with contrived equal-time candidates.
+- **QA can test**: all three response-status scenarios reproducible with controlled/mocked provider responses (normal ranked case, fallback-with-warning case, zero-viable-option case), tie-break behavior with contrived equal-time candidates, label present and reasonable (nearest-match phrasing, not a false precise-address claim) on every returned candidate.
 
 ### INC-7: Disclaimer, latency hardening, timeout handling
 - Persistent FR-014 disclaimer on all candidate-bearing responses; per-call `REQUEST_TIMEOUT_MS`, `PROVIDER_CONCURRENCY_LIMIT` tuning, overall orchestration timeout, `timeout` status path (section 6.3).
@@ -425,11 +430,18 @@ Each increment below is independently testable by QA and does not depend on anyt
 - **Covers**: remainder of NFR-001, NFR-002, FR-016/FR-017 (full end-to-end), NFR-006 edge cases, NFR-003 closure check.
 - **QA can test**: full mobile device pass across breakpoints, full paid-tier auth flow including session expiry, full regression pass.
 
+### INC-9 (conditional/optional): Visual route + candidate map view
+- **Condition to build this increment at all**: only if it does not increase Google Maps Platform provider API cost (user decision, section 1.3). Per section 3.1a, this is achievable using Leaflet + a free-tier non-Google tile provider (e.g., MapTiler free plan or Stadia Maps free tier — **not** the raw OpenStreetMap demo tile server, per the production-usage-policy caveat in 3.1a), rendering the route polyline and candidate markers from data already fetched in INC-3/INC-4/INC-6 (no new billed Google call).
+- Not required for FR/NFR compliance — every FR/NFR is already satisfied by the text/card-based output of INC-1..8. This increment is a pure UX enhancement, and its detailed visual/interaction design belongs to designer's `ux-spec.md`, not this document.
+- Flag to designer: confirm the non-Google tile provider choice and attribution requirements (OSM-family tiles require on-map attribution text) fit the intended UX before building.
+- **Covers**: no FR/NFR directly (enhancement only); depends on data already produced by INC-3 (route polyline), INC-4 (candidate points), and INC-6 (final ranked/fallback candidates + labels).
+- **QA can test**: map renders route + candidate markers correctly; confirm via network inspection that no additional Google Maps Platform billed request is triggered by loading or interacting with the map (only the non-Google tile requests, which are free-tier and out of Google's billing pool).
+
 ### Traceability summary
-- FR-001 → INC-2. FR-002 → INC-3. FR-003 → INC-2. FR-004 → INC-2 (pending DQ-1). FR-005 → INC-4. FR-006(a-f) → INC-3/4/5/6. FR-007 → INC-3. FR-008 → INC-5. FR-009 → INC-4/6. FR-010 → INC-6. FR-011 → INC-6. FR-012 → INC-6. FR-013 → INC-6. FR-014 → INC-7. FR-015 → INC-2. FR-016/FR-017 → INC-1/INC-8.
+- FR-001 → INC-2. FR-002 → INC-3. FR-003 → INC-2. FR-004 → INC-2 (resolved DQ-1: start + driverDestination only). FR-005 → INC-4. FR-006(a-f) → INC-3/4/5/6. FR-007 → INC-3. FR-008 → INC-5. FR-009 → INC-4/6. FR-010 → INC-6. FR-011 → INC-6. FR-012 → INC-6. FR-013 → INC-6. FR-014 → INC-7. FR-015 → INC-2. FR-016/FR-017 → INC-1/INC-8.
 - NFR-001 → INC-1/INC-8. NFR-002 → INC-1. NFR-003 → cross-cutting, checked at INC-1 and closed at INC-8. NFR-004 → designed in section 6, validated at INC-7. NFR-005 → release prerequisite, before INC-1. NFR-006 → INC-2/INC-8. NFR-007 → accepted risk, no increment (explicitly out of scope per requirements).
 
-No FR/NFR is currently without design coverage, contingent on DQ-1 through DQ-3 being resolved (they affect *how* certain increments are built, not *whether* they're covered).
+No FR/NFR is without design coverage. All previously open questions (DQ-1, DQ-2, DQ-3) are resolved as of 2026-07-11; only DQ-4 (billing-alert ops setup) remains, and it is a release/runbook task, not a design gap.
 
 ---
 
@@ -438,3 +450,4 @@ No FR/NFR is currently without design coverage, contingent on DQ-1 through DQ-3 
 | Date | Change | Reason |
 |---|---|---|
 | 2026-07-10 | Initial design drafted from FINAL requirements.md and approved idea-brief.md; provider recommendation (Google Maps Platform), two-phase candidate/detour/transit evaluation algorithm, config schema, 8-increment plan; DQ-1 through DQ-4 raised for pm/user resolution before Gate 3 | Phase 2 kickoff following Gate 2 approval |
+| 2026-07-11 | Resolved DQ-1 (FR-004 radius check applies only to `start`+`driverDestination`, not `passengerDestination` — updated sections 4.1, 5.2, INC-2, traceability); resolved DQ-2 (Google Maps Platform + free-tier estimate confirmed, no changes needed); resolved DQ-3 (5s soft target + graceful timeout confirmed, no changes needed); recorded new user decisions: no upper bound on `maxDetourMinutes` (INC-3), added section 3.1 confirming (a) Leaflet+non-Google-tiles satisfies the "map view must not increase provider cost" condition and (b) Google's Geocoding API can reverse-geocode arbitrary candidate points for card labels (with nearest-match/coarse-label caveats), added `label` field to `DropOffSearchResponse`, added conditional/optional INC-9 (visual map view) to the increment plan; DQ-4 remains open only as a release/runbook dependency, not a design gap | User resolved all open questions from initial draft; incorporating into finalized design for Gate 3 |
