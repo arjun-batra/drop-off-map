@@ -119,6 +119,17 @@ function parsePaidTierAccessPassword(env: Env, appMode: AppMode, problems: strin
 }
 
 /**
+ * INC-9: deliberately optional (`null` when unset), unlike this file's other
+ * ~20 keys -- see schema.ts's doc comment on `mapTileUrlTemplate` for why.
+ * No `problems.push` here on either branch; an unset value is a valid,
+ * supported "map view disabled" configuration, not a misconfiguration.
+ */
+function parseOptionalString(env: Env, key: string): string | null {
+  const raw = env[key];
+  return raw && raw.trim() !== "" ? raw : null;
+}
+
+/**
  * Loads and validates the full application configuration from environment
  * variables. Fails fast (throws ConfigError) if any required variable is
  * missing or malformed, including the design.md section 10 / INC-1
@@ -154,6 +165,8 @@ export function loadConfig(env: Env = process.env): AppConfig {
   const geocodeDebounceMs = parsePositiveNumber(env, "GEOCODE_DEBOUNCE_MS", problems, true);
   const sessionLifetimeSeconds = parsePositiveNumber(env, "SESSION_LIFETIME_SECONDS", problems, true);
   const paidTierAccessPassword = parsePaidTierAccessPassword(env, appMode, problems);
+  const mapTileUrlTemplate = parseOptionalString(env, "MAP_TILE_URL_TEMPLATE");
+  const mapTileAttribution = parseOptionalString(env, "MAP_TILE_ATTRIBUTION");
 
   if (problems.length > 0) {
     throw new ConfigError(problems);
@@ -178,5 +191,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
     minGeocodeQueryLength,
     geocodeDebounceMs,
     sessionLifetimeSeconds,
+    mapTileUrlTemplate,
+    mapTileAttribution,
   };
 }

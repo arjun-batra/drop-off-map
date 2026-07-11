@@ -9,9 +9,9 @@ export interface DirectRouteResult {
 /**
  * Mirrors design.md section 5.1's `RoutingService` interface. Implementations
  * are provider-specific (see googleRoutingService.ts) but this interface is
- * what any caller (api/route/direct.ts now; the INC-4+ candidate/detour
- * pipeline later) depends on, so the provider can be swapped without touching
- * call sites.
+ * what any caller (api/drop-off-search.ts, plus the candidate/detour
+ * generation pipeline it orchestrates) depends on, so the provider can be
+ * swapped without touching call sites.
  */
 export interface RoutingService {
   /**

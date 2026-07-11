@@ -241,6 +241,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         // FR-014/INC-7: present whenever candidates.length > 0, per
         // design.md section 5.2's documented contract. Resolves REV-012.
         disclaimer: DISCLAIMER_TEXT,
+        // INC-9: directRoute.polyline was already computed above by the
+        // same request's RoutingService call (INC-3) -- reusing it here adds
+        // no new provider call, it just exposes already-fetched data to the
+        // frontend's optional map view (design.md section 3.1a/10).
+        route: directRoute.polyline,
         requestId,
         timingMs: Date.now() - requestStart,
       });
@@ -251,6 +256,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       status: "ranked",
       candidates,
       disclaimer: DISCLAIMER_TEXT,
+      route: directRoute.polyline,
       requestId,
       timingMs: Date.now() - requestStart,
     });

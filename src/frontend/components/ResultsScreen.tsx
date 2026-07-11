@@ -1,4 +1,8 @@
+import { useState } from "react";
+import type { PublicConfig } from "../../config/schema";
 import type { DropOffSearchCandidate, DropOffSearchRequest, DropOffSearchResponse } from "../../search/types";
+import { ErrorBoundary } from "./ErrorBoundary";
+import { MapView } from "./MapView";
 import "./ResultsScreen.css";
 
 interface ResultsScreenProps {
@@ -7,6 +11,8 @@ interface ResultsScreenProps {
   onEditSearch: () => void;
   /** Re-issues the identical search (design.md section 6.3/8's "timeout" status -- "message distinct from the above, inviting retry"). */
   onTryAgain: () => void;
+  /** INC-9: only the tile-provider settings the map panel needs, not the full PublicConfig. */
+  mapConfig: Pick<PublicConfig, "mapTileUrlTemplate" | "mapTileAttribution">;
 }
 
 function formatMinutes(value: number): string {
@@ -45,12 +51,33 @@ function emptyStateTitle(status: DropOffSearchResponse["status"]): string {
  * wrapping this component, so a crash anywhere in here can never hide the
  * disclaimer (REV-012).
  */
-export function ResultsScreen({ response, request, onEditSearch, onTryAgain }: ResultsScreenProps) {
+export function ResultsScreen({ response, request, onEditSearch, onTryAgain, mapConfig }: ResultsScreenProps) {
   const isMessageOnly =
     response.status === "no_viable_option" ||
     response.status === "out_of_service_area" ||
     response.status === "invalid_input" ||
     response.status === "timeout";
+
+  const [highlightedRank, setHighlightedRank] = useState<number | null>(null);
+
+  // ux-spec.md section 6.7: the map panel is omitted gracefully (not shown
+  // broken/empty) on every message-only status -- there is nothing to plot --
+  // and also when the operator hasn't configured a tile provider at all
+  // (config/schema.ts's `mapTileUrlTemplate`/`mapTileAttribution` are
+  // optional, `null` when unset -- this is the "map view disabled" case, not
+  // an error). `response.route` is also only present when
+  // candidates.length > 0 (see search/types.ts), so checking all three is
+  // belt-and-suspenders against a malformed/partial response.
+  const showMap =
+    (response.status === "ranked" || response.status === "fallback") &&
+    !!response.route &&
+    !!mapConfig.mapTileUrlTemplate &&
+    !!mapConfig.mapTileAttribution;
+
+  function handleSelectCandidate(rank: number) {
+    setHighlightedRank(rank);
+    document.getElementById(`results-screen-card-${rank}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
 
   return (
     <div className="app-shell">
@@ -77,6 +104,26 @@ export function ResultsScreen({ response, request, onEditSearch, onTryAgain }: R
           </div>
         )}
 
+        {showMap && response.route && mapConfig.mapTileUrlTemplate && mapConfig.mapTileAttribution && (
+          // ux-spec.md section 6.7's own "if the map tile/script fails to
+          // load, fail silently and simply omit the panel" requirement,
+          // structurally enforced the same way REV-012 already enforces it
+          // for the disclaimer -- an ErrorBoundary around only the map, with
+          // a `null` fallback, so a Leaflet init failure can never take the
+          // cards (or anything else on this screen) down with it.
+          <ErrorBoundary fallback={null}>
+            <MapView
+              route={response.route}
+              candidates={response.candidates.map((candidate) => ({ rank: candidate.rank, location: candidate.location }))}
+              variant={response.status === "fallback" ? "fallback" : "ranked"}
+              tileUrlTemplate={mapConfig.mapTileUrlTemplate}
+              tileAttribution={mapConfig.mapTileAttribution}
+              highlightedRank={highlightedRank}
+              onSelectCandidate={handleSelectCandidate}
+            />
+          </ErrorBoundary>
+        )}
+
         {response.status === "fallback" && response.warning && (
           <div className="results-screen__warning-banner type-body-strong">{response.warning}</div>
         )}
@@ -84,7 +131,12 @@ export function ResultsScreen({ response, request, onEditSearch, onTryAgain }: R
         {(response.status === "ranked" || response.status === "fallback") && (
           <div className="results-screen__cards">
             {response.candidates.map((candidate) => (
-              <CandidateCard key={candidate.rank} candidate={candidate} isFallback={response.status === "fallback"} />
+              <CandidateCard
+                key={candidate.rank}
+                candidate={candidate}
+                isFallback={response.status === "fallback"}
+                highlighted={candidate.rank === highlightedRank}
+              />
             ))}
           </div>
         )}
@@ -96,16 +148,19 @@ export function ResultsScreen({ response, request, onEditSearch, onTryAgain }: R
 interface CandidateCardProps {
   candidate: DropOffSearchCandidate;
   isFallback: boolean;
+  /** INC-9: true right after the matching map pin was tapped -- ux-spec.md section 6.7's "brief flash" on the corresponding card. */
+  highlighted?: boolean;
 }
 
-function CandidateCard({ candidate, isFallback }: CandidateCardProps) {
+function CandidateCard({ candidate, isFallback, highlighted }: CandidateCardProps) {
   const isBest = candidate.rank === 1 && !isFallback;
 
   return (
     <article
+      id={`results-screen-card-${candidate.rank}`}
       className={`results-screen__card ${isBest ? "results-screen__card--best" : ""} ${
         isFallback ? "results-screen__card--fallback" : ""
-      }`}
+      } ${highlighted ? "results-screen__card--flash" : ""}`}
     >
       <div className="results-screen__card-header">
         <span

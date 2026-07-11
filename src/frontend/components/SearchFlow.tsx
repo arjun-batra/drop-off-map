@@ -127,6 +127,7 @@ export function SearchFlow({ config, onSessionExpired }: SearchFlowProps) {
             request={stage.request}
             onEditSearch={() => setStage({ kind: "input" })}
             onTryAgain={() => runSearch(stage.request)}
+            mapConfig={config}
           />
         </ErrorBoundary>
       </>

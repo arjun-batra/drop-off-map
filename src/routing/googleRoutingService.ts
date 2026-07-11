@@ -37,9 +37,12 @@ export interface GoogleRoutingServiceOptions {
    * design.md section 6.3/7's REQUEST_TIMEOUT_MS -- hard per-call timeout
    * (INC-7/NFR-004). Optional so existing unit tests that construct this
    * service without a timeout keep working unmodified (see
-   * src/http/fetchWithTimeout.ts); every production caller (api/route/direct.ts,
-   * api/candidates/evaluate.ts, api/candidates/transit.ts, api/drop-off-search.ts)
-   * always supplies `config.requestTimeoutMs`.
+   * src/http/fetchWithTimeout.ts); the production caller
+   * (api/drop-off-search.ts) always supplies `config.requestTimeoutMs`.
+   * (REV-013/INC-8: the INC-3/4/5 debug endpoints that previously also
+   * called this -- api/route/direct.ts, api/candidates/evaluate.ts,
+   * api/candidates/transit.ts -- were retired once api/drop-off-search.ts
+   * fully superseded them.)
    */
   timeoutMs?: number;
 }
@@ -58,7 +61,7 @@ function formatLatLng(point: LatLng): string {
  * section 3's chosen provider/SKU for FR-006a/b, FR-007) -- not the newer
  * Routes API; design.md section 3/4.1 both describe the Directions API
  * (`departure_time=now`, traffic-aware duration) explicitly. Server-side
- * only -- see api/route/direct.ts, the sole caller. `apiKey` must never
+ * only -- called by api/drop-off-search.ts (INC-6). `apiKey` must never
  * reach the browser.
  */
 export function createGoogleRoutingService(options: GoogleRoutingServiceOptions): RoutingService {

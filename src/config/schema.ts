@@ -55,15 +55,30 @@ export interface AppConfig {
    * changing only this env var, no code change. Non-secret: this URL is
    * requested directly by the browser (Leaflet has no server-side proxy),
    * so it is exposed via PublicConfig the same way GEOGRAPHIC_CENTER is.
+   *
+   * **Optional, `null` when unset** (same "conditionally present" pattern
+   * already used for `paidTierAccessPassword`) -- deliberately not a
+   * required-with-no-fallback key like this schema's other ~20 entries,
+   * because design.md section 10/1.3 frames the whole map view as a
+   * conditional/optional enhancement no FR/NFR depends on ("every FR/NFR is
+   * already satisfied by the text/card-based output of INC-1..8"). Requiring
+   * every existing/future deployment to configure a tile provider just to
+   * avoid a config-load failure would contradict that "optional" framing.
+   * When either this or `mapTileAttribution` is `null`, the frontend omits
+   * the map panel entirely (ux-spec.md section 6.7's own "fail silently,
+   * simply omit the panel" requirement) -- the same graceful-degradation
+   * behavior as a tile-load failure, just triggered by absent config instead
+   * of a network error.
    */
-  mapTileUrlTemplate: string;
+  mapTileUrlTemplate: string | null;
   /**
    * INC-9: attribution text/HTML required by OSM-family tile providers'
    * license terms, rendered in Leaflet's built-in attribution control.
    * Configurable (not hardcoded) because it must match whichever tile
-   * provider `mapTileUrlTemplate` points at.
+   * provider `mapTileUrlTemplate` points at. Optional/`null` for the same
+   * reason as `mapTileUrlTemplate` above.
    */
-  mapTileAttribution: string;
+  mapTileAttribution: string | null;
 }
 
 /**
@@ -88,8 +103,8 @@ export interface PublicConfig {
    * hardcoded threshold.
    */
   responseTimeTargetSeconds: number;
-  /** INC-9: see AppConfig's field of the same name -- needed client-side so Leaflet can request tiles directly. */
-  mapTileUrlTemplate: string;
-  /** INC-9: see AppConfig's field of the same name. */
-  mapTileAttribution: string;
+  /** INC-9: see AppConfig's field of the same name -- needed client-side so Leaflet can request tiles directly. Optional/`null` when the map view isn't configured. */
+  mapTileUrlTemplate: string | null;
+  /** INC-9: see AppConfig's field of the same name. Optional/`null` when the map view isn't configured. */
+  mapTileAttribution: string | null;
 }

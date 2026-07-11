@@ -87,4 +87,25 @@ export interface DropOffSearchResponse {
   requestId: string;
   /** For QA to verify NFR-004 empirically. */
   timingMs: number;
+  /**
+   * INC-9 (design.md section 3.1a/10, ux-spec.md section 6.7): the driver's
+   * direct-route polyline, already decoded server-side by INC-3's
+   * `RoutingService.getDirectRoute` for the same request -- this field adds
+   * no new provider call, it just carries data the backend already computed
+   * out to the frontend for the optional map view. **Design-doc gap**:
+   * design.md section 5.2's `DropOffSearchResponse` listing predates INC-9
+   * and never defines a route field, even though section 3.1a/10's own text
+   * requires this exact data ("render the route polyline... using data
+   * already fetched") reach the frontend -- same category of gap as INC-4's
+   * `maxDetourMinutes` and INC-5's `FullyEvaluatedCandidate` (an omission in
+   * an otherwise-unambiguous spec, not a business ambiguity). Added here as
+   * the literal completion of that requirement; flagged to tech-lead for
+   * design.md section 5.2 confirmation. Present exactly when
+   * candidates.length > 0 ("ranked"/"fallback"), mirroring `disclaimer`'s own
+   * presence rule, so the frontend can use its presence as the same signal
+   * it already uses to decide whether to render the map panel at all
+   * (ux-spec.md section 6.7: omitted gracefully on
+   * no_viable_option/out_of_service_area/invalid_input/timeout).
+   */
+  route?: Array<{ lat: number; lng: number }>;
 }

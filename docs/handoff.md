@@ -930,3 +930,122 @@ Running `tsc --noEmit` with `tests/` now included surfaces a number of **pre-exi
 - **The retired debug endpoints' local-dev SPA-fallback behavior** (200 + `index.html` instead of a clean 404) is a pre-existing property of `scripts/viteApiMiddleware.ts`'s `next()` call for unmatched routes, not something this increment's removal introduced — any route not in the `ROUTES` table has always fallen through to the SPA shell locally. Production (Vercel) behavior is a genuine 404 since the function file doesn't exist. Not a discrepancy worth fixing given this tooling is explicitly dev-only and never shipped (per its own module comment).
 - **REV-003, REV-008, REV-011, REV-015** (already RESOLVED or routed to pm/tech-lead/designer, not dev, per the Findings Register) were not touched this increment — out of scope for dev's ownership.
 - **REV-010** (real-`MAP_API_KEY` empirical verification, all four sub-conditions) remains open and untouched by this increment — still no real key available in this environment; this is a qa/release pre-Phase-4 closure item, not something dev can close from here.
+
+---
+
+# Handoff: INC-9 (conditional/optional) — Visual route + candidate map view
+
+Status: implemented, smoke-tested, ready for QA. Covers no FR/NFR directly (design.md section 10: "pure UX enhancement... every FR/NFR is already satisfied by the text/card-based output of INC-1..8"). New config keys: `MAP_TILE_URL_TEMPLATE`, `MAP_TILE_ATTRIBUTION` (both optional/nullable — see below).
+
+Also includes a small bonus fix requested by the orchestrator: **REV-017** (stale comments in `src/routing/googleRoutingService.ts`/`src/routing/types.ts` still naming the three INC-8-retired debug endpoints as current/sole callers) — see its own subsection at the end.
+
+## Tile provider chosen, and why
+
+**CARTO's free "Positron" raster basemap** (`https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png`), attribution `© OpenStreetMap contributors © CARTO`.
+
+Reasoning, weighed against the two alternatives design.md/ux-spec.md name as examples (MapTiler, Stadia Maps):
+- Both MapTiler and Stadia Maps require an account + API key to use at all (even their free tiers). This sandbox has no such account/key, and — per the orchestrator's brief — the realistic expectation is that **the user will need to do this setup themselves** for their own deployment regardless of which provider dev picks in code. Given that, I picked a provider that is genuinely **keyless/anonymous** for CARTO's basemap tiles specifically, so (a) the app works out of the box with zero setup for anyone who clones this repo (including this sandbox — see Smoke test section, where real tile *requests* were fired, just blocked by this environment's network proxy allowlist, not by any missing credential), and (b) it's a real, managed, non-Google, non-raw-OSM-demo-server provider, satisfying design.md section 3.1a's explicit constraint ("not the raw OpenStreetMap demo tile server").
+- This is not a permanent-production recommendation at high volume — CARTO's free anonymous basemap tiles are rate-limited for exactly that reason, the same caveat design.md already applies to every free tier in this project (Google's own credit, etc.). It's the right default for "works immediately, zero setup, satisfies the licensing/ToS constraint," not necessarily the right choice forever.
+- **Nothing about this choice is hardcoded.** Per the project's no-hardcoded-tunables rule, the tile provider itself is a config value (`MAP_TILE_URL_TEMPLATE`/`MAP_TILE_ATTRIBUTION`), not a literal baked into `MapView.tsx` — switching to MapTiler or Stadia Maps (or any other Leaflet-compatible XYZ tile provider) later is a **pure `.env`/deployment-config change, zero code change**.
+
+## What the user needs to do to get real tiles showing in their own deployment
+
+**Nothing, by default** — `.env.example`'s shipped default (`MAP_TILE_URL_TEMPLATE`/`MAP_TILE_ATTRIBUTION` set to the CARTO values above) will render real tiles out of the box once deployed somewhere that can actually reach `basemaps.cartocdn.com` (this sandbox's outbound network proxy blocks arbitrary third-party domains not on its allowlist — confirmed via direct `curl` to `basemaps.cartocdn.com`, `api.maptiler.com`, and `tiles.stadiamaps.com`, all `403`'d identically by the proxy, while `maps.googleapis.com` is allowlisted; see Smoke test section for how this was worked around for verification purposes). This is a sandbox-network limitation, not a code or config defect.
+
+**For a real production deployment at meaningful volume**, get a free-tier account with MapTiler (https://www.maptiler.com/cloud/) or Stadia Maps (https://stadiamaps.com/) and set two env vars (no code change):
+- `MAP_TILE_URL_TEMPLATE` — the exact XYZ URL template your provider's dashboard gives you, with your API key already embedded in the string (e.g. `https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=YOUR_KEY`).
+- `MAP_TILE_ATTRIBUTION` — the exact attribution text/HTML that provider's terms require, so the on-map attribution control (a licensing requirement for OSM-family tiles, not optional) stays accurate for whichever provider is actually in use.
+
+Both are documented with this exact guidance directly in `.env.example`.
+
+## Design decision: made both new config keys optional, not required-with-no-fallback
+
+Every other config key in this schema (~20 of them) is required with no code fallback — operators must set every one or `loadConfig()` throws. I deliberately did **not** follow that pattern for `MAP_TILE_URL_TEMPLATE`/`MAP_TILE_ATTRIBUTION`: both are optional, `null` when unset (mirroring the existing `paidTierAccessPassword: string | null` "conditionally present" pattern, not inventing a new one).
+
+**Why**: design.md section 10 explicitly frames INC-9 as conditional/optional — "not required for FR/NFR compliance... every FR/NFR is already satisfied by the text/card-based output of INC-1..8." Making the tile config mandatory would force every existing and future deployment (including ones with zero interest in the map) to configure a tile provider just to avoid the whole app failing to start with a `ConfigError`, which directly contradicts that "optional enhancement" framing. Instead: unset tile config = map view gracefully disabled (same graceful-degradation behavior ux-spec.md section 6.7 already specifies for a *runtime* tile-load failure — "fail silently, simply omit the panel" — just triggered by absent config instead of a network error), while the rest of the app (INC-1-8's full feature set) is completely unaffected.
+
+I verified this concretely reduces the regression footprint from adding a new config field: initially building this as a required key (my first draft) broke `loadConfig()` broadly across **77 existing tests** (every test using the shared `validEnv()` fixture, which doesn't know about the two new required keys). Making them optional instead reduced that to **3 tests failing**, all in one file (`tests/config/publicConfig.test.ts`'s and one `loader.test.ts`/`config-public.test.ts` exact-object-shape assertion each) — see "Known limitations for QA" below. **Flagging this design choice to tech-lead for design.md section 7 confirmation** (schema changes technically belong to tech-lead, not dev) — I made the call in the direction that best matches the increment's own documented "optional" framing rather than leave the schema silently inconsistent with it, but want it confirmed/reflected in design.md's config table rather than left only in code + this handoff.
+
+## What was built
+
+### Backend
+
+**`src/config/schema.ts` / `loader.ts` / `publicConfig.ts`** — added `mapTileUrlTemplate: string | null` / `mapTileAttribution: string | null` to `AppConfig` and `PublicConfig` (optional, see above). `GET /api/config/public` now returns both.
+
+**`src/search/types.ts`** — added `route?: Array<{ lat: number; lng: number }>` to `DropOffSearchResponse`. **Design-doc gap, same category as INC-4's `maxDetourMinutes` and INC-5's `FullyEvaluatedCandidate`**: design.md section 5.2's `DropOffSearchResponse` listing predates INC-9 and never defines a route field, even though section 3.1a/10's own text requires exactly this data ("render the route polyline... using data already fetched") reach the frontend. Added as the literal completion of that requirement — present exactly when `candidates.length > 0` (`ranked`/`fallback`), mirroring `disclaimer`'s own presence rule. **Flagged to tech-lead for design.md section 5.2 confirmation**, per this project's established "flag, don't silently guess" precedent for this exact category of gap.
+
+**`api/drop-off-search.ts`** — both the `ranked` and `fallback` response bodies now include `route: directRoute.polyline`. `directRoute` was already computed earlier in the same handler by the existing `RoutingService.getDirectRoute` call (INC-3) — this adds **zero new provider calls**, it only exposes already-fetched, already-in-memory data in the response. Verified directly (see Smoke test section) that no additional outbound provider request is triggered by this change.
+
+### Frontend
+
+**`src/frontend/components/MapView.tsx` (new) + `MapView.css` (new)** — the map panel itself, per ux-spec.md section 6.7:
+- Raw Leaflet (`leaflet` + `@types/leaflet`, added as dependencies — no `react-leaflet` wrapper; a plain `useEffect`-managed `L.Map` instance was simpler and avoided a second mapping-abstraction dependency for what's a fairly small, self-contained component).
+- Renders the route polyline (`response.route`) and one marker per candidate (`response.candidates`), using Leaflet's `divIcon` (not the default `L.Icon` — avoids the well-known Vite/Leaflet default-marker-image-path issue entirely, and lets marker colors come from CSS tokens instead of inline JS literals, matching ux-spec.md section 2's "reference tokens, not inline literals" rule).
+- Marker colors per ux-spec.md section 6.7: rank-1 gets `--color-brand-primary` (matches the card's "BEST OPTION" accent), ranks 2-3 get a neutral `--color-text-secondary`-based color, and the single fallback-state candidate gets `--color-warning-border` (matches the card's "CLOSEST OPTION" badge).
+- Tap-to-highlight: clicking a marker calls `onSelectCandidate(rank)`; `ResultsScreen` uses this to scroll the matching card into view and apply a brief CSS-animation "flash" (`results-screen__card--flash`, `ResultsScreen.css`) — a pure CSS `@keyframes` animation, not a JS timer, so it always settles back to the card's normal resting background on its own. Tapping a card does not re-center the map, per spec ("keeps interaction one-directional and simple").
+- Display-only for v1 (no pan/zoom-driven re-querying, no draggable pins, no custom recenter control) — exactly per ux-spec.md section 6.7.
+- Attribution: Leaflet's built-in attribution control renders `tileAttribution` automatically (both "Leaflet" itself and the configured provider attribution) — satisfies the OSM-family licensing requirement with no custom code.
+
+**`src/frontend/components/ResultsScreen.tsx` (edited)** — map panel inserted between the trip summary and the fallback-warning-banner/candidate-cards, exactly per ux-spec.md section 6.7's layout. `showMap` is `true` only when: status is `ranked`/`fallback` **and** `response.route` is present **and** both tile-config values are non-null — i.e., gracefully omitted (not shown broken) on `no_viable_option`/`out_of_service_area`/`invalid_input`/`timeout`, and equally gracefully omitted if the operator hasn't configured a tile provider at all. The map itself is additionally wrapped in an `<ErrorBoundary fallback={null}>` (reusing the existing `ErrorBoundary` component from INC-7/REV-012's disclaimer-resilience work) so a Leaflet init failure can only ever remove the map panel, never take down the disclaimer or the text-based cards below it — the same structural "fail silently, isolate the blast radius" pattern already established for the disclaimer, now applied to the map per ux-spec.md section 6.7's own explicit requirement ("if the map tile/script fails to load, fail silently and simply omit the panel").
+
+**`src/frontend/components/SearchFlow.tsx` (edited)** — passes `config` (the already-fetched `PublicConfig`) through to `<ResultsScreen mapConfig={config}>` — no second fetch, same pattern already used everywhere else in this codebase for config plumbing.
+
+**`.env.example`** — documented both new keys, including the "these two are optional, unlike everything else in this file" callout and the MapTiler/Stadia Maps production-swap guidance.
+
+**`package.json`/`package-lock.json`** — added `leaflet` (dependency) and `@types/leaflet` (devDependency).
+
+## How to run / smoke-test
+
+1. Same as INC-1-8: `npm install`, fill in `.env.local`. Map view specifically: leave `MAP_TILE_URL_TEMPLATE`/`MAP_TILE_ATTRIBUTION` unset to confirm the "disabled" path, or copy `.env.example`'s CARTO defaults to see the map attempt to render (real tile imagery requires outbound network access to `basemaps.cartocdn.com`, which this sandbox's proxy blocks — see below; a real deployment environment will not have this restriction).
+2. Run a search (`POST /api/drop-off-search`) that returns `status: "ranked"` or `"fallback"` — the response now includes a `route` field; the Results screen renders the map panel above the candidate cards.
+
+## Smoke test performed
+
+- `npm run typecheck`, `npm run lint`, `npm run build` — all clean (lint had one `react-hooks/exhaustive-deps` warning on `MapView.tsx`'s marker-cleanup ref access, fixed by capturing the ref's current value in a local variable before the effect's cleanup closure, per the rule's own suggested fix — confirmed zero warnings after).
+- `npm test` — 392/395 passing, 3 pre-existing-shape-assertion failures, all expected fallout from adding two new `PublicConfig` fields (see "Known limitations for QA" below) — no other regression across the full existing suite.
+- Real dev server (`npm run dev`) + `GET /api/config/public` confirmed `mapTileUrlTemplate`/`mapTileAttribution` come through correctly both when set (CARTO URL/attribution string) and when unset (`null`).
+- **Full Playwright browser walkthrough** (390×844 mobile viewport, chromium, headless) against the local dev server, with `/api/geocode` and `/api/drop-off-search` responses intercepted at the network layer (so this is deterministic and doesn't depend on a real `MAP_API_KEY`, same pattern every prior increment's frontend smoke test has used):
+  - Filled all three location fields + detour minutes through the real Input Screen UI, submitted, landed on Results with a mocked `"ranked"` response carrying 2 candidates + a `route` polyline.
+  - **Map container mounts**: `.map-view` present in the DOM, correct bounding box (~358×220px, matching ux-spec.md section 6.7's "200-240px tall, full-width" spec).
+  - **Markers appear at correct positions**: 2 `.map-view__marker` elements rendered, rank-1 marker text reads `#1`; each marker's on-screen pixel position (`getBoundingClientRect`) was distinct and non-zero, confirming Leaflet actually projected each candidate's lat/lng into real screen coordinates rather than stacking everything at the origin.
+  - **Attribution text is present**: `.leaflet-control-attribution` textContent read back as `"Leaflet | © OpenStreetMap contributors © CARTO"` — both Leaflet's own required attribution and the configured provider attribution render, satisfying the OSM-family tile licensing requirement.
+  - **Tap-to-highlight**: clicking the rank-2 marker resulted in `results-screen-card-2` gaining the `results-screen__card--flash` class (scroll+highlight fired correctly).
+  - **Console/page errors observed**: exactly 3 `net::ERR_TUNNEL_CONNECTION_FAILED` errors, all from the actual tile image `<img>` requests Leaflet fired to `basemaps.cartocdn.com` — this is this sandbox's outbound-network-proxy allowlist blocking a domain that isn't on it (confirmed independently via direct `curl` to the same host returning a `403` at the proxy/CONNECT layer, while `maps.googleapis.com` — evidently allowlisted for this project — returns a normal `200`/API response). **This is a sandbox network-policy limitation, not a code defect**: the map correctly *attempted* real tile requests to a real, reachable-in-production provider; a real deployment environment (or QA's own machine) will not have this restriction and should see actual basemap imagery. This matches exactly what the orchestrator's brief anticipated ("map rendering can be checked... even without live tile imagery, by confirming the container mounts, markers appear at correct positions, and attribution text is present") — all three were confirmed independent of the blocked tile images.
+  - **Fallback variant**: a mocked `"fallback"` response (1 candidate, `exceedsThreshold: true`) rendered the map with a single marker using the `.map-view__marker--fallback` (warning-colored) class, not the rank-1/rank-other classes.
+  - **Graceful omission, no_viable_option**: a mocked `"no_viable_option"` response resulted in `.map-view` count `0` — panel correctly absent, not shown broken/empty.
+  - **Graceful omission, tile config unset**: restarted the dev server with `MAP_TILE_URL_TEMPLATE`/`MAP_TILE_ATTRIBUTION` both blank; a mocked `"ranked"` response (with `route` and candidates both present) still resulted in `.map-view` count `0`, while the candidate card itself still rendered normally (count `1`) — confirms the map is the *only* thing gated by tile config, not the rest of the Results screen.
+- **No new provider (Google Maps Platform) calls were introduced.** `api/drop-off-search.ts`'s change is additive-field-only on an already-computed value (`directRoute.polyline`, from INC-3's existing `RoutingService.getDirectRoute` call) — no new call site was added anywhere in the request pipeline. Confirmed by re-reading the diff: the only change to `api/drop-off-search.ts` is two new object-literal keys in the JSON response bodies, no new `await`/service-call lines.
+
+## Known limitations / things for QA to be aware of
+
+1. **Tile imagery could not be visually confirmed loading in this sandbox** (network-proxy restriction, not a code issue — see Smoke test section). QA should re-run the same browser walkthrough on a machine/environment with normal outbound internet access to confirm actual basemap tiles render, in addition to the container/marker/attribution checks already performed here.
+2. **New `PublicConfig` fields break 3 pre-existing exact-shape assertions** (same category of fallout as REV-006/007's `MIN_GEOCODE_QUERY_LENGTH`/`GEOCODE_DEBOUNCE_MS` precedent, just much smaller in scope this time since the two new keys are optional rather than required — see the "Design decision" section above for why that mattered):
+   - `tests/config/publicConfig.test.ts` — "returns exactly the 8 fields..." now needs `mapTileAttribution`/`mapTileUrlTemplate` added to its expected key list (10 fields total).
+   - `tests/config/loader.test.ts` — "loads a fully-specified free_tier environment into the exact AppConfig shape" needs the same two keys added to its expected shape (as `null`, since `validEnv()` doesn't set the two new env vars).
+   - `tests/api/config-public.test.ts` — "happy path: free_tier returns 200 with the correct non-secret shape" — same fix.
+   No other test in the suite is affected (392/395 passing unmodified).
+3. **`tests/frontend/ResultsScreen.test.tsx` will need a `mapConfig` prop added to its existing `<ResultsScreen>` render calls** (a new required prop on the component) — this only surfaces as a `tsc --noEmit` type error currently (not a runtime failure, since vitest's esbuild transpile doesn't type-check), consistent with the REV-005 pattern already established (type errors in `tests/` are QA's to pick up, don't block `vitest run` itself). Recommend QA also add coverage for `MapView`'s new behavior (map presence per status, graceful omission when tile config is null, marker variant/count, tap-to-highlight) — none of that exists yet since `tests/` is QA-owned and dev did not add any test files this increment, per the pipeline rule.
+4. **The card-flash highlight animation doesn't replay on a second click of the same already-highlighted marker** (React won't touch the DOM `className` attribute if the computed string is unchanged between renders, so the CSS animation doesn't restart) — a minor, cosmetic-only limitation of the simple state-driven approach, not a functional bug (the scroll-into-view still fires every time). Not fixed since ux-spec.md section 6.7 only asks for "a brief flash" on tap generally, and the core interaction (map pin -> correct card highlighted/scrolled) works correctly on every click, including repeated clicks of different markers.
+5. **Design-doc gaps flagged to tech-lead** (see "What was built" above for full detail): (a) `DropOffSearchResponse.route` field addition to design.md section 5.2, (b) the "optional, nullable" config-key pattern for `MAP_TILE_URL_TEMPLATE`/`MAP_TILE_ATTRIBUTION` vs. this schema's otherwise-universal "required, no fallback" convention, both should be reflected in design.md's own tables per this project's "docs stay in sync with reality" rule, even though no user-facing behavior is in question for either.
+6. **No pan/zoom-driven re-querying, draggable pins, or recenter control** — deliberately out of scope for v1 per ux-spec.md section 6.7 ("keeps it a presentation layer over already-computed results, not a new input surface"), not an oversight.
+7. **This increment does not touch anything from INC-1-8** other than the two additive fields on `DropOffSearchResponse`/`PublicConfig` described above — every existing screen/flow/status is otherwise byte-for-byte unchanged. If tech-lead/QA/pm ultimately decide the map view isn't worth keeping (e.g. tile-provider reliability concerns at scale), it can be removed by deleting `MapView.tsx`/`.css` and the `showMap`/`mapConfig` wiring in `ResultsScreen.tsx`/`SearchFlow.tsx` alone, with zero impact on any other feature.
+
+## REV-017 (bonus fix, same session) — stale "sole caller" comments in `src/routing/`
+
+**`src/routing/googleRoutingService.ts`**: the `GoogleRoutingServiceOptions.timeoutMs` doc comment and `createGoogleRoutingService`'s own doc comment both still named `api/route/direct.ts` as "the sole caller" (and separately listed all three retired INC-3/4/5 debug endpoints as current callers of `timeoutMs`) — stale since INC-8/REV-013 deleted those three endpoints, leaving `api/drop-off-search.ts` as the actual (and only) caller. Updated both comments to say so, with a parenthetical noting the three debug endpoints were retired rather than just silently dropping the historical context.
+
+**`src/routing/types.ts`**: `RoutingService`'s doc comment listed `api/route/direct.ts` as a current caller and described the INC-4+ candidate/detour pipeline as a future consumer — updated to reflect that both are now true simultaneously via `api/drop-off-search.ts` (which directly calls `RoutingService.getDirectRoute` and orchestrates the candidate/detour pipeline that also depends on it), rather than the stale future-tense framing.
+
+Comment-only change, no behavior/logic touched. Verified via `grep` across `src/` that no other stale reference to the three retired debug endpoints remains outside of this now-accurate historical note.
+
+## Files touched (INC-9 + REV-017)
+
+- `src/config/schema.ts`, `src/config/loader.ts`, `src/config/publicConfig.ts`
+- `src/search/types.ts`
+- `api/drop-off-search.ts`
+- `src/frontend/components/MapView.tsx` (new), `src/frontend/components/MapView.css` (new)
+- `src/frontend/components/ResultsScreen.tsx`, `src/frontend/components/ResultsScreen.css`
+- `src/frontend/components/SearchFlow.tsx`
+- `.env.example`
+- `package.json`, `package-lock.json`
+- `src/routing/googleRoutingService.ts`, `src/routing/types.ts` (REV-017)
