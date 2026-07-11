@@ -191,13 +191,15 @@ describe("SearchFlow -- ux-spec.md Input -> Loading -> Results | Error orchestra
     expect(container.textContent).toContain("No drop-off points found");
   });
 
-  // BUG-001 (see docs/test-report.md): SearchFlow.tsx's runSearch() has no
+  // BUG-001 (see docs/test-report.md): SearchFlow.tsx's runSearch() had no
   // cancellation token/AbortController, so a stale in-flight request that
-  // resolves AFTER the user clicks Cancel silently overwrites whatever
-  // screen the user has navigated to since. Marked `.fails` so this is
-  // tracked as a known, filed regression rather than a silent skip -- flip
-  // back to a normal `it(...)` once dev fixes BUG-001 and this should pass.
-  it.fails("BUG-001: clicking Cancel during Loading returns to Input, but a stale in-flight response later silently navigates the user away from Input to Results (race condition, not aborted)", async () => {
+  // resolved AFTER the user clicked Cancel would silently overwrite whatever
+  // screen the user had navigated to since. Dev's fix cycle 1 added a
+  // monotonically-incrementing `currentSearchToken` ref checked before every
+  // `setStage` call inside `runSearch`. Independently re-verified (see the
+  // "BUG-001 fix verification" describe block below) -- flipped back to a
+  // normal `it(...)` now that it genuinely passes.
+  it("BUG-001: clicking Cancel during Loading returns to Input, and a stale in-flight response later does NOT navigate the user away from Input to Results (race condition, no longer reproducible)", async () => {
     render();
     let resolveSearch!: (value: unknown) => void;
     vi.spyOn(api, "searchDropOffPoints").mockReturnValue(
@@ -259,5 +261,100 @@ describe("SearchFlow -- ux-spec.md Input -> Loading -> Results | Error orchestra
     // silently overwrites the user's current screen.
     expect(container.textContent).toContain("DropSpot");
     expect(container.textContent).not.toContain("Oak Ave & Main St");
+  });
+
+  // BUG-001's compounding case, independently re-verified per dev's claim
+  // that the same token mechanism also covers an *older* search resolving
+  // after a *newer* one has already started (not just the simple
+  // cancel-then-resolve case above). Two overlapping searches are issued
+  // (the second submitted only after cancelling/leaving the first's Loading
+  // screen -- the only way this app lets a user "go back and submit a
+  // different search" mid-flight); the newer one resolves first (the normal
+  // order), and the older one is then resolved afterward, out of order. The
+  // correct/newer result must remain displayed -- the stale older response
+  // must be a no-op, not silently overwrite the newer, already-rendered
+  // results.
+  it("BUG-001 compounding case: an older, superseded search resolving after a newer one has already rendered its results does not clobber them", async () => {
+    render();
+    let resolveOlder!: (value: unknown) => void;
+    let resolveNewer!: (value: unknown) => void;
+    const searchSpy = vi.spyOn(api, "searchDropOffPoints");
+    searchSpy.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveOlder = resolve;
+      }),
+    );
+
+    await fillAndSubmit();
+    expect(container.textContent).toContain("Finding the best drop-off");
+
+    // Leave the first (older) search's Loading screen without it ever
+    // resolving, then submit a second, newer search.
+    const cancelButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Cancel")!;
+    act(() => {
+      cancelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(container.textContent).toContain("DropSpot");
+
+    searchSpy.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveNewer = resolve;
+      }),
+    );
+    await fillAndSubmit();
+    expect(container.textContent).toContain("Finding the best drop-off");
+    expect(searchSpy).toHaveBeenCalledTimes(2);
+
+    const candidateBase = {
+      rank: 1,
+      location: { lat: 43.66, lng: -79.4 },
+      routeOrderIndex: 0,
+      driveTimeToDropoffMinutes: 8,
+      detourMinutes: 3,
+      walkTimeMinutes: 4,
+      waitTimeMinutes: 5,
+      transitTimeMinutes: 17,
+      passengerTotalTimeMinutes: 26,
+      driverTotalTimeMinutes: 27,
+      exceedsThreshold: false,
+    };
+
+    // The NEWER search resolves first (the normal, non-race order).
+    await act(async () => {
+      resolveNewer({
+        ok: true,
+        response: {
+          status: "ranked",
+          candidates: [{ ...candidateBase, label: "Newer Candidate Rd" }],
+          requestId: "newer-request",
+          timingMs: 5,
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain("Newer Candidate Rd");
+
+    // The OLDER (superseded) search now resolves out of order, after the
+    // newer one's results are already on screen.
+    await act(async () => {
+      resolveOlder({
+        ok: true,
+        response: {
+          status: "ranked",
+          candidates: [{ ...candidateBase, label: "Older Candidate Rd" }],
+          requestId: "older-request",
+          timingMs: 9000,
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The newer, correct result must still be displayed -- the older
+    // response must not have silently won just because it resolved after.
+    expect(container.textContent).toContain("Newer Candidate Rd");
+    expect(container.textContent).not.toContain("Older Candidate Rd");
   });
 });
