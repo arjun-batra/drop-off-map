@@ -17,6 +17,7 @@ type HandlerModule = { default: (req: VercelRequest, res: VercelResponse) => unk
 const ROUTES: Record<string, () => Promise<HandlerModule>> = {
   "/config/public": () => import("../api/config/public.js"),
   "/auth/verify-password": () => import("../api/auth/verify-password.js"),
+  "/geocode": () => import("../api/geocode.js"),
 };
 
 function readRequestBody(req: IncomingMessage): Promise<string> {

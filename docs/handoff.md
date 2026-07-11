@@ -82,3 +82,74 @@ All of the following were run and passed locally before this handoff:
 ## Config keys covered (design.md section 7 / runbook.md section 4)
 
 All 14 keys are read and validated by `loadConfig()`: `MAP_ROUTING_PROVIDER`, `MAP_API_KEY`, `GEOGRAPHIC_CENTER`, `GEOGRAPHIC_RADIUS_KM`, `MAX_CANDIDATES_RETURNED`, `APP_MODE`, `PAID_TIER_ACCESS_PASSWORD`, `RESPONSE_TIME_TARGET_SECONDS`, `TRANSIT_MODES_INCLUDED`, `CANDIDATE_SPACING_METERS`, `MAX_RAW_CANDIDATES_SAMPLED`, `MAX_TRANSIT_EVALUATIONS_PER_REQUEST`, `DISTANCE_MATRIX_BATCH_SIZE`, `REQUEST_TIMEOUT_MS`, `PROVIDER_CONCURRENCY_LIMIT`. None have a hardcoded fallback value in code — every one must be set as an env var, matching the project's no-hardcoded-tunables rule.
+
+---
+
+# Handoff: INC-2 — Location input, geocoding, radius validation
+
+Status: implemented, smoke-tested, ready for QA.
+Covers: FR-001, FR-003, FR-004, FR-015, NFR-006. Config keys consumed (already loaded by INC-1's loader, now actually used): `MAP_API_KEY`, `GEOGRAPHIC_CENTER`, `GEOGRAPHIC_RADIUS_KM`.
+
+## What was built
+
+### Backend
+
+**`src/geo/`** (new — shared, framework-agnostic geo math)
+- `types.ts` — `LatLng` shared coordinate type.
+- `radiusValidator.ts` — `haversineDistanceKm()` (pure great-circle distance) + `RadiusValidator.isWithinServiceArea(point, config)`, implementing design.md section 5.1's `RadiusValidator` interface. Deliberately isomorphic (no Node-only APIs) so it is imported **directly by the frontend** as well as usable server-side later (INC-4+'s `/api/drop-off-search`) — `GEOGRAPHIC_CENTER`/`GEOGRAPHIC_RADIUS_KM` are already public via `/api/config/public` (INC-1), so no secret is at risk letting the browser run this check itself for instant field-level feedback (ux-spec.md section 4.1's "validation timing" requirement — checked the moment a suggestion is selected, not deferred to submit, with no extra network round trip).
+
+**`src/geocoding/`** (new)
+- `types.ts` — `GeoResult`, `GeocodingService` interface, mirroring design.md section 5.1 exactly.
+- `errors.ts` — `GeocodingProviderError` (thrown for any non-OK/non-ZERO_RESULTS provider status or transport failure; `ZERO_RESULTS` is treated as a normal empty result, not an error).
+- `googleGeocodingService.ts` — `createGoogleGeocodingService({ apiKey, fetchImpl?, endpoint? })` implements `GeocodingService.resolve()` / `.reverseGeocode()` against Google Maps Platform's Geocoding API (design.md section 3's chosen provider). `fetchImpl`/`endpoint` are injectable purely for testability (QA can mock the provider without hitting the real API or needing a key). Server-side only — `MAP_API_KEY` never leaves this module.
+
+**`api/geocode.ts`** (new) — `GET /api/geocode`, design.md section 5.2.
+- **Wrapped by `AuthGate.check()`** — the first real protected business endpoint (per the orchestrator's flag): `loadConfig()` first, then `AuthGate.check(req, config)`, returning `401 {"error":"unauthorized"}` before any provider call is made if it fails. Verified this actually gates over real HTTP in `paid_tier` mode (see Smoke test section) — not just referenced/imported.
+- Two query shapes, matching what the Input Screen needs:
+  - `?query=<text>` → forward geocode (`GeocodingService.resolve`), used for the address-autocomplete dropdown. Rejects queries under `MIN_QUERY_LENGTH` (3 chars, per ux-spec.md section 4.1) with `400 query_too_short`.
+  - `?lat=&lng=` → reverse geocode (`GeocodingService.reverseGeocode`), used by "use my current location". On `ZERO_RESULTS`, returns `200 {"results":[]}` (not an error) so the frontend can show its own "couldn't resolve" state consistently.
+- Non-OK method → `405`. Config load failure → `500 config_error` (same pattern as the other two INC-1 endpoints). Any other provider failure → `502 provider_error`.
+- `scripts/viteApiMiddleware.ts` — added the `/geocode` route so local dev (`npm run dev`) serves it the same way as the other two endpoints.
+
+### Frontend
+
+**`src/frontend/hooks/useLocationField.ts`** (new) — encapsulates one field's full lifecycle per ux-spec.md section 4.1: debounced (300ms) autocomplete query (min 3 chars), suggestion selection, "use my current location" (browser Geolocation API → `/api/geocode?lat=&lng=` reverse geocode), and the FR-004 radius check via `RadiusValidator` — gated by an `applyRadiusCheck` option so the same hook serves all three fields per design's resolved DQ-1. Status machine: `empty | typing | resolved | geolocating | geolocation_unavailable | unresolvable | out_of_service_area | provider_error`.
+
+**`src/frontend/components/InputScreen.tsx`** (rewritten) — the three location fields (start, driver's destination, passenger's destination) are now fully wired:
+- `applyRadiusCheck={true}` for start and driver's destination; `applyRadiusCheck={false}` for passenger's destination (FR-004/DQ-1 — get this scope right, per the orchestrator's explicit flag). Verified via a browser smoke test that an identical far-away address is blocked on driver's destination but accepted cleanly on passenger's destination.
+- Autocomplete dropdown (ARIA combobox pattern: `role="combobox"`/`listbox`/`option`, arrow-key navigable, Enter to select, mousedown-not-click on options so selection registers before the input's blur handler fires).
+- "Use my current location" button now calls the real Geolocation API + reverse-geocodes the result; shows the "current location" badge/pill per ux-spec.md section 4.1.
+- Field states rendered per ux-spec.md section 4.1's table: resolved (check icon), geolocating (spinner + "Finding your location…"), geolocation unavailable/denied, unresolvable address ("We couldn't find that address…"), out-of-service-area (danger border + copy with the **actual configured** radius/center substituted in, e.g. "within 200 km of Toronto, ON"), and a `provider_error` state (not explicitly in the spec table, added per ux-spec's "never fail silently" principle to cover a failed/network-down geocode call).
+- The detour-minutes field and the "Find drop-off points" CTA remain **unchanged from INC-1** (still disabled, "coming in a later increment") — FR-002/search itself is INC-3/INC-6 scope, not INC-2.
+
+**`src/frontend/api.ts`** — added `geocodeQuery(query)` / `reverseGeocode(lat, lng)`, thin fetch wrappers around `/api/geocode` (both send `credentials: "same-origin"` so the session cookie reaches the AuthGate-protected endpoint in `paid_tier` mode).
+
+**`src/frontend/App.tsx`** — now passes the already-fetched `PublicConfig` down to `<InputScreen config={...}>` so the radius check has `geographicCenter`/`geographicRadiusKm` without a second fetch.
+
+## How to run/smoke-test
+
+1. Same as INC-1: `npm install`, fill in `.env.local` (a real `MAP_API_KEY` is now needed to see *successful* geocode results — a dummy key still exercises every error path correctly, see below), `npm run dev`.
+2. `GET /api/geocode?query=<address>` → `{ results: GeoResult[] }`; `GET /api/geocode?lat=&lng=` → same shape, single result.
+
+## Smoke test performed
+
+- `npm run typecheck`, `npm run lint`, `npm run build`, `npm test` (full existing INC-1 suite, 99 tests) — all clean, no regressions.
+- Backend, `/api/geocode` handler invoked directly with a mocked provider (`fetch` stubbed) covering: `free_tier` forward geocode success; **`paid_tier` with no cookie → `401 unauthorized`; `paid_tier` with a wrong/garbage cookie → `401`; `paid_tier` with a valid session cookie → `200`** (this is the AuthGate-wiring check the orchestrator specifically flagged); reverse geocode success; `ZERO_RESULTS` → `200` empty array (not an error); query-too-short → `400`; wrong HTTP method → `405`.
+- Backend, over real HTTP against the local dev server (not just the injected handler) with `APP_MODE=paid_tier`: confirmed `GET /api/geocode?query=...` with no cookie → `401`; after `POST /api/auth/verify-password` with the correct password and reusing the resulting cookie → request passes AuthGate and reaches the (dummy-key) Google call, failing there instead with `502 provider_error` — i.e., **AuthGate is provably in the request path before the provider call**, not bypassed. Also reconfirmed `GET /api/config/public` stays `200`/unauthenticated in `paid_tier` mode (INC-1 behavior, unaffected).
+- Backend, with a dummy (invalid) `MAP_API_KEY` against the real Google endpoint (real outbound HTTPS call, `free_tier`): got Google's actual `REQUEST_DENIED` response, correctly surfaced as `502 provider_error` — confirms the provider integration and error mapping work against the real API, not just mocks.
+- Full browser walkthrough (Playwright, 390×844 mobile viewport) against the local dev server with `/api/geocode` responses intercepted at the network layer (so the *frontend* wiring is verified deterministically without needing a real Google API key):
+  - Typing an address (3+ chars, debounced) renders a suggestion dropdown; selecting one resolves the field (check icon, value replaced with the resolved formatted address).
+  - A far-away resolved address on **driver's destination** shows the out-of-service-area message with the real configured radius/center substituted in.
+  - The **identical far-away address on passenger's destination** resolves cleanly with no radius error and shows the resolved check icon — confirms the FR-004 exemption scope is correct.
+  - An address with zero geocode results shows "We couldn't find that address…".
+  - "Use my current location" (mocked `Geolocation`/`context.setGeolocation`) populates the field via reverse geocode and shows the "current location" badge.
+
+## Known limitations / things for QA to test
+
+1. **No real `MAP_API_KEY` was available in this environment.** All success-path provider responses were verified against a mocked `fetch` (backend) or intercepted `/api/geocode` network calls (frontend), plus one real call to Google with a deliberately invalid key to confirm the error-mapping path against the live API. QA should re-run the full success path against a real key before sign-off, particularly to confirm Google's actual autocomplete-style result quality/ordering for ambiguous queries.
+2. **The autocomplete uses the Geocoding API's `address=` parameter, not Places Autocomplete.** Design.md section 5.1's `GeocodingService` interface only specifies `resolve(query): Promise<GeoResult[]>` / `reverseGeocode`, with no separate autocomplete-specific method — this was implemented literally against that interface. Practically this means suggestions only appear once a query is specific enough for the Geocoding API to return full-address matches (it does not do partial-prefix "as-you-type" place suggestions the way Places Autocomplete does). This is a reasonable reading of the design, but flag to tech-lead if partial-prefix suggestions turn out to be a hard UX requirement — that would need a design update (a different Google API/SKU with its own cost implications per section 3).
+3. **Debounce (300ms) and minimum-query-length (3 chars) are literal constants**, not config-file entries — they mirror ux-spec.md section 4.1's explicit UX behavior spec ("min 3 characters…standard debounce" — exact ms called out there as a dev implementation detail, not a business tunable), not one of design.md section 7's audited config keys. Flag to tech-lead/reviewer if this reasoning is wrong and it should be promoted to config.
+4. **`REQUEST_TIMEOUT_MS` is not yet wired into the geocoding call.** Per-call timeout hardening is explicitly INC-7 scope (design.md section 6.3/10) — INC-2's provider calls rely on whatever the platform's default HTTP timeout is. Not a regression, just not yet built.
+5. **Blur-triggered "unresolvable" validation has a possible one-frame race**: if a user blurs the field while a debounced geocode request is still in flight, the blur handler may transiently mark the field "unresolvable" before the in-flight response arrives and corrects the status (to "typing" with suggestions, or a confirmed "unresolvable"). The final state always converges correctly; QA may see a brief flash on a slow network and should confirm it self-corrects rather than sticking.
+6. **Passenger destination's exemption from the radius check is enforced only via the `applyRadiusCheck={false}` prop on the frontend's `LocationField`/`useLocationField`**, and by simply never invoking `RadiusValidator` server-side yet (no `/api/drop-off-search` exists until INC-4+). QA should specifically re-verify this exemption again once INC-4's server-side validation ordering is built, per design.md section 5.2's "(1) shape/type → (2) radius check on start+driverDestination only)" ordering — this increment only covers the input-screen-level check.
+7. As with INC-1, the CTA ("Find drop-off points") and the detour-minutes field are still non-functional placeholders — unchanged from INC-1, intentionally out of INC-2 scope.

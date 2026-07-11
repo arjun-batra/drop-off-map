@@ -52,7 +52,7 @@ export function App() {
     );
   }
 
-  return <InputScreen />;
+  return <InputScreen config={state.config} />;
 }
 
 interface CenteredMessageProps {

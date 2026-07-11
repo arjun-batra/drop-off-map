@@ -11,13 +11,22 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-xs);
+  position: relative;
+}
+
+.input-screen__input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
 }
 
 .input-screen__input {
+  width: 100%;
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-sm);
   background: var(--color-bg-surface);
   padding: var(--space-sm);
+  padding-right: calc(var(--space-sm) * 2 + 20px);
   min-height: 44px;
 }
 
@@ -26,12 +35,88 @@
   outline: none;
 }
 
+.input-screen__input-wrap--error .input-screen__input {
+  border-color: var(--color-danger-border);
+  background: var(--color-danger-bg);
+}
+
+.input-screen__status-icon {
+  position: absolute;
+  right: var(--space-sm);
+  color: var(--color-brand-primary);
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.input-screen__status-icon--spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--color-border-default);
+  border-top-color: var(--color-brand-primary);
+  border-radius: 50%;
+  animation: input-screen-spin 0.8s linear infinite;
+}
+
+@keyframes input-screen-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.input-screen__suggestions {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  margin: 0;
+  padding: var(--space-2xs) 0;
+  list-style: none;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.input-screen__suggestion {
+  padding: var(--space-sm);
+  cursor: pointer;
+  color: var(--color-text-primary);
+}
+
+.input-screen__suggestion--active,
+.input-screen__suggestion:hover {
+  background: var(--color-bg-surface-raised);
+}
+
+.input-screen__helper {
+  margin: 0;
+}
+
+.input-screen__helper--muted {
+  color: var(--color-text-secondary);
+}
+
+.input-screen__helper--danger {
+  color: var(--color-danger-text);
+}
+
+.input-screen__badge {
+  align-self: flex-start;
+  background: var(--color-bg-surface-raised);
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-full);
+  padding: var(--space-2xs) var(--space-sm);
+}
+
 .input-screen__geolocate {
   align-self: flex-start;
   border: none;
   background: none;
-  color: var(--color-text-secondary);
-  cursor: not-allowed;
+  color: var(--color-brand-primary);
+  cursor: pointer;
   padding: var(--space-xs) 0;
   min-height: 44px;
 }
