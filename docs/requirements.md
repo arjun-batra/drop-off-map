@@ -86,7 +86,76 @@ Record of decisions made directly by the user in conversation with the orchestra
 - **DEC-2 (2026-07-11) — No rate-limiting/lockout on password-gate attempts, kept as-is (relates to NFR-007; originates from reviewer finding REV-003).** Considered: adding a 3-attempt lockout on `POST /api/auth/verify-password`. Decided: do not add it. The app is fully stateless/serverless with no database (per NFR-003's persistence constraints); any real lockout mechanism would require either an unreliable in-memory counter (would not survive across serverless invocations) or introducing a new persistence dependency, which the user judged not worth the trade-off. This is a deliberate, accepted-risk decision, not an oversight — no rate-limiting/throttling is implemented on this endpoint by design.
 - **DEC-3 (2026-07-11) — Walking-only transit results are a valid, normally-ranked outcome, not a "no transit available" case (relates to FR-006, FR-008, FR-010, FR-011, FR-012; surfaced by dev during INC-5 transit-evaluation implementation).** Considered: treating a candidate whose Google transit-mode directions return a walking-only route (zero bus/subway/tram legs) the same as `noTransitAvailable: true` (excluding it from normal ranking, surfacing it only via the FR-011 no-qualifying-candidate fallback), versus treating it as a genuine, rankable result. Decided: walking-only routes are treated as a valid result with near-zero transit time and ranked normally alongside all other candidates per FR-006e/FR-010 (likely near the top, since a short walk to the destination is a great outcome for the passenger) — they are not flagged as no-transit-available and do not trigger the FR-011 fallback or the FR-012 "no viable option" message. FR-012 updated with a clarifying note reflecting this.
 
-## 6. Changelog
+## 6. Phase 4 Delivery Confirmation (2026-07-11)
+
+Formal pm sign-off, per CLAUDE.md Phase 4 ("pm confirms every FR/NFR delivered or explicitly deferred"), following qa's Phase 4 end-to-end test (67/67 checks passed) and reviewer's Phase 4 Closure Audit (zero open blockers, zero open majors, full traceability sweep, `docs/review-log.md`). This is pm's independent accounting, cross-checked against `docs/design.md` §10's traceability summary, all 9 increment sections of `docs/handoff.md`, and reviewer's Findings Register — not a restatement of another agent's conclusion taken on trust.
+
+### Functional Requirements
+
+| ID | Delivered by | Status |
+|---|---|---|
+| FR-001 | INC-2 | DELIVERED — verified by QA/reviewer |
+| FR-002 | INC-3 | DELIVERED — no-upper-bound decision (§1.3 of design.md) honored, verified |
+| FR-003 | INC-2 | DELIVERED |
+| FR-004 | INC-2 (client-side) + INC-6 (server-side, `/api/drop-off-search`) | DELIVERED — DQ-1's passenger-destination exemption confirmed at both layers |
+| FR-005 | INC-4 | DELIVERED |
+| FR-006a | INC-3 | DELIVERED and tested via mocks; live-traffic value correctness against a real Google response is pending final verification (REV-010 sub-conditions 1-2, see below) |
+| FR-006b | INC-3 (baseline) + INC-4 (full detour formula) | DELIVERED |
+| FR-006c/d/e | INC-5 | DELIVERED and tested via mocks; live-transit value correctness and real-response parsing robustness pending final verification (REV-010 sub-conditions 3-4, see below) |
+| FR-006f | INC-6 | DELIVERED |
+| FR-007 | INC-3 | DELIVERED — implemented and tested via mocks (departure_time sent, `duration_in_traffic` preferred over static `duration`, confirmed at the code level); the live-data claim itself is pending final real-world verification during release's deploy dry-run (REV-010 sub-conditions 1-2) — not claiming unconditional completion |
+| FR-008 | INC-5 | DELIVERED — implemented and tested via mocks (candidate-specific departure time, live-schedule parameter confirmed present); the live-data claim itself is pending final real-world verification during release's deploy dry-run (REV-010 sub-conditions 3-4) — not claiming unconditional completion |
+| FR-009 | INC-4 (flag computed) + INC-6 (applied to ranking) | DELIVERED |
+| FR-010 | INC-6 | DELIVERED, including the route-order tie-break |
+| FR-011 | INC-6 | DELIVERED, including OQ-3's "smallest passenger time regardless of detour" fallback rule |
+| FR-012 | INC-6 | DELIVERED, including DEC-3's walking-only clarification |
+| FR-013 | INC-6 | DELIVERED |
+| FR-014 | INC-7 | DELIVERED — REV-012 (major: disclaimer/ux-spec conflict) and REV-015 (minor: zero-candidate-state scope question) both resolved and independently re-verified by reviewer |
+| FR-015 | INC-2 | DELIVERED |
+| FR-016 | INC-1 (partial) + INC-8 (full, including re-auth on session expiry) | DELIVERED |
+| FR-017 | INC-1 (partial) + INC-8 (full) | DELIVERED |
+
+### Non-Functional Requirements
+
+| ID | Delivered by | Status |
+|---|---|---|
+| NFR-001 | INC-1 (partial, pre-declared scope) + INC-8 (full mobile polish pass) | DELIVERED |
+| NFR-002 | INC-1 | DELIVERED |
+| NFR-003 | INC-1 (initial) + INC-8 (closure re-check) | DELIVERED — no persistence surface exists anywhere in the app, re-confirmed as recently as the INC-9 audit |
+| NFR-004 | Designed in design.md §6.3; mechanism (per-call timeout, orchestration deadline, graceful degradation, distinct `timeout` status) built and validated at INC-7 | DELIVERED, mechanism validated; the empirical claim that real-world latency clears the 5-second soft target under real provider conditions is pending final verification during release's deploy dry-run (REV-010 sub-condition 4) — not claiming unconditional completion |
+| NFR-005 | Release prerequisite (CI/CD, hosting, `docs/runbook.md`, all established pre-INC-1) | **DELIVERED, DEPLOY PENDING** — infrastructure and process are fully designed-for and ready (runbook.md exists, dated pre-INC-1); the actual live public deploy has not yet been executed. This is correctly sequenced per CLAUDE.md Phase 4 (release's deploy dry-run follows this pm sign-off), not a gap in delivery to date. |
+| NFR-006 | INC-2 + INC-8 (re-confirmed) | DELIVERED |
+| NFR-007 | Accepted risk, no increment required — codified in DEC-2 | DELIVERED as a documented, deliberate scope decision (no rate-limiting/abuse protection built), not an implementation gap |
+
+### REV-010 — carve-out affecting FR-007, FR-008, NFR-004
+
+Reviewer's Findings Register holds exactly one open item, REV-010 (minor, TEST-GAP), with five sub-conditions, all sharing one root cause: no real Google Maps Platform API key and no unrestricted outbound network access has been available in any environment used across the project's nine increments. Every mechanism underlying FR-007, FR-008, and NFR-004 has been independently verified correct at the code/mock level by both QA and reviewer (departure-time parameters genuinely sent and clock-driven, live-traffic value preferred over static, transit walk/wait/ride parsing arithmetic hand-verified against constructed fixtures, timeout/degradation logic traced through actual control flow). What remains open is a fact about the external world (does Google's live data actually differ meaningfully from static data for real routes; does a real transit response ever have an unanticipated shape; does real end-to-end latency clear the target), not a fact about whether the code is written correctly.
+
+**pm's characterization, per the orchestrator's brief**: FR-007, FR-008, and NFR-004 are **implemented and tested via mocks, pending final real-world verification during release's deploy dry-run** — not claimed as unconditionally complete. This is consistent with reviewer's own Phase 4 Closure Audit disposition (REV-010 correctly deferred to release's deploy dry-run, not a code defect, not a blocker to Phase 4 closure).
+
+### Decisions Log (§5) closure confirmation
+
+- **DEC-1** (session cookie expiry deferred to INC-8) — CLOSED, no dangling follow-up. The fix landed at INC-8 (signed-expiry session tokens, re-auth UX), independently re-verified by reviewer from `src/auth/session.ts` directly (REV-002, the project's only major finding, formally RESOLVED). The interim-risk window DEC-1 accepted has now closed with the fix delivered.
+- **DEC-2** (no rate-limiting/lockout on the password gate, kept as-is) — CLOSED, no dangling follow-up. This is a final, unconditional, user-confirmed accepted-risk decision (no caveat remaining), independently re-verified by reviewer directly against requirements.md §5's text (closes REV-003).
+- **DEC-3** (walking-only transit results are a valid, normally-ranked outcome) — CLOSED, no dangling follow-up. Implemented in the INC-5 follow-up fix and confirmed flowing correctly through `Ranker.rank`'s full pipeline at the INC-6 audit (a walking-only candidate correctly wins ranking against a slower real-transit candidate, per DEC-3's intent) — not just implemented at the transit-evaluation layer in isolation.
+
+### Out-of-scope items — confirmed correctly excluded, not accidentally half-built
+
+Per `docs/idea-brief.md`'s explicit v1 "Scope — Out" list, cross-checked against all 9 increments of `docs/handoff.md`:
+- **Native mobile apps** — not built; web-only, confirmed.
+- **User accounts, saved trips, trip history, favorites** — not built; NFR-002/NFR-003 enforce this at every increment, re-confirmed at INC-8's closure check with no persistence surface introduced anywhere.
+- **Shared driver/passenger session/link** — not built; no such feature exists anywhere in the codebase.
+- **Offline/low-connectivity support** — not built. `SearchErrorScreen`'s `navigator.onLine` check (INC-6) only swaps error-message copy when the browser reports itself offline; it does not provide any offline functionality, caching, or queuing. This is a messaging nicety, not scope creep into offline support.
+- **Geographic coverage beyond ~200km of Toronto** — respected via NFR-006's configurable radius; the passenger-destination's exemption from the radius check (DQ-1) was an explicit, approved design decision distinguishing "driver's drivable leg" from "passenger's onward transit journey," not an expansion of scope.
+- **Safety/legality assessment of drop-off points** — not built; addressed only via FR-014's disclaimer, exactly as idea-brief risk #1 anticipated ("disclaimer only" was the resolution reached, not filtering/verification logic).
+
+### Sign-off
+
+All 17 FRs and 7 NFRs in this document are accounted for: delivered and verified, or explicitly deferred with a documented reason (NFR-005's deploy execution; FR-007/FR-008/NFR-004's real-world data/latency verification under REV-010). All three Decisions Log entries are fully closed with no dangling follow-up. All explicitly out-of-scope items are confirmed correctly excluded. Nothing in this project's FR/NFR set was silently dropped between phases.
+
+**pm recommends proceeding to release's deploy dry-run**, with the explicit instruction (echoing reviewer's own recommendation) that the dry-run include a real-credential/real-network pass against REV-010's five sub-conditions — not merely a deploy-succeeds smoke check — so that REV-010 and NFR-005 can both be closed with an actual result before final Phase 4 closure is presented to the user.
+
+## 7. Changelog
 
 | Date | Change | Reason |
 |---|---|---|
@@ -96,3 +165,4 @@ Record of decisions made directly by the user in conversation with the orchestra
 | 2026-07-10 | Resolved all 8 open questions; finalized FR-004, FR-006b, FR-010, FR-011, FR-015, FR-016, FR-017; added NFR-004 (5s latency target with feasibility-validation caveat) and NFR-007 (rate-limiting explicitly deferred); updated Configuration table (`APP_MODE` replaces `FREE_TIER_USAGE_LIMIT`/`RATE_LIMIT_PER_IP`); status changed DRAFT to FINAL | User answers received; document ready for Gate 2 approval |
 | 2026-07-11 | Added section 5, "Decisions Log," recording DEC-1 (session cookie expiry fix deferred to INC-8, accepted interim risk) and DEC-2 (password-gate lockout/rate-limiting considered and explicitly declined, stateless-architecture trade-off). Renumbered former section 5 (Changelog) to section 6. | Closing a documentation gap flagged by reviewer (REV-002, REV-003 at INC-2 closure): both decisions were made directly with the user in conversation with the orchestrator but never recorded in an owning artifact, violating the "a decision not written to its owner's artifact did not happen" rule. No FR/NFR scope, numbering, or content changed — this is a record of already-made decisions, not a new change request. |
 | 2026-07-11 | Added DEC-3 to Decisions Log (walking-only transit routes treated as a valid, normally-ranked result rather than "no transit available"). Added a clarifying note to FR-012 stating that a walking-only path counts as a viable outcome and does not trigger the "no viable option" message. | Closing a decision-recording gap: dev surfaced a genuine product ambiguity during INC-5 implementation (transit evaluation), the user decided directly with the orchestrator, and the decision plus its implication for FR-012's wording needed to be recorded per the "a decision not written to its owner's artifact did not happen" rule. FR-012 wording clarified only, not rewritten; no new FR/NFR added, no new approval gate required. |
+| 2026-07-11 | Added new section 6, "Phase 4 Delivery Confirmation" (renumbered former section 6, Changelog, to section 7). Records pm's formal sign-off confirming all 17 FRs and 7 NFRs delivered/verified or explicitly deferred with reason (NFR-005 deploy-pending, FR-007/FR-008/NFR-004 real-world verification pending under REV-010), closure confirmation of DEC-1/DEC-2/DEC-3 with no dangling follow-up, and confirmation that all idea-brief out-of-scope items remain correctly excluded. | Phase 4 closure gate per CLAUDE.md ("pm confirms every FR/NFR delivered or explicitly deferred"), following qa's Phase 4 end-to-end test (67/67 passed) and reviewer's Phase 4 Closure Audit (zero open blockers/majors, docs/review-log.md). No FR/NFR scope, numbering, or content changed by this entry — a closure record, not a new requirement or change request. |
