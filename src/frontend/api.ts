@@ -1,5 +1,6 @@
 import type { PublicConfig } from "../config/schema";
 import type { GeoResult } from "../geocoding/types";
+import type { DropOffSearchRequest, DropOffSearchResponse } from "../search/types";
 
 export interface VerifyPasswordResult {
   ok: boolean;
@@ -52,6 +53,47 @@ export async function fetchPublicConfig(): Promise<PublicConfig> {
     throw new Error(`/api/config/public returned ${res.status}`);
   }
   return (await res.json()) as PublicConfig;
+}
+
+export type SearchErrorCode = "unauthorized" | "provider_error" | "network_error";
+
+export interface SearchOutcome {
+  ok: boolean;
+  response?: DropOffSearchResponse;
+  errorCode?: SearchErrorCode;
+}
+
+/**
+ * POST /api/drop-off-search -- design.md section 5.2 (INC-6). Any non-2xx
+ * HTTP response (auth failure, provider failure, unexpected server error) is
+ * surfaced as `ok: false` so SearchFlow.tsx can render the system/network
+ * failure state (ux-spec.md section 7) rather than trying to parse a
+ * missing/malformed body -- a well-formed *business* outcome
+ * (invalid_input/out_of_service_area/no_viable_option/ranked/fallback) is
+ * always a 200 with a `DropOffSearchResponse` body, per this endpoint's own
+ * documented contract.
+ */
+export async function searchDropOffPoints(request: DropOffSearchRequest): Promise<SearchOutcome> {
+  try {
+    const res = await fetch("/api/drop-off-search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify(request),
+    });
+
+    if (res.status === 401) {
+      return { ok: false, errorCode: "unauthorized" };
+    }
+    if (!res.ok) {
+      return { ok: false, errorCode: "provider_error" };
+    }
+
+    const body = (await res.json()) as DropOffSearchResponse;
+    return { ok: true, response: body };
+  } catch {
+    return { ok: false, errorCode: "network_error" };
+  }
 }
 
 /** Thin fetch wrapper around POST /api/auth/verify-password (design.md section 5.2). */

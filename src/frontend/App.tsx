@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { PublicConfig } from "../config/schema";
 import { fetchPublicConfig } from "./api";
 import { PasswordGate } from "./components/PasswordGate";
-import { InputScreen } from "./components/InputScreen";
+import { SearchFlow } from "./components/SearchFlow";
 import { hasClientSessionFlag } from "./sessionFlag";
 
 type AppState =
@@ -52,7 +52,7 @@ export function App() {
     );
   }
 
-  return <InputScreen config={state.config} />;
+  return <SearchFlow config={state.config} />;
 }
 
 interface CenteredMessageProps {

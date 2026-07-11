@@ -27,6 +27,16 @@ export interface UseLocationFieldOptions {
   /** design.md section 7.1 (REV-006/REV-007): sourced from GET /api/config/public, never a local literal. */
   minGeocodeQueryLength: number;
   geocodeDebounceMs: number;
+  /**
+   * Seeds the field as already-resolved on mount -- used by INC-6's "Edit
+   * search" flow (ux-spec.md section 6.3/7) so a field remounted after
+   * Results/Error still shows its previously resolved value, in-memory only
+   * (NFR-003). Only read on first render (React `useState` initializer
+   * semantics); a later prop change does not re-seed an already-mounted
+   * field, which is fine since SearchFlow.tsx fully unmounts/remounts this
+   * component tree on every stage transition.
+   */
+  initialValue?: ResolvedLocation | null;
 }
 
 export interface UseLocationFieldResult {
@@ -48,10 +58,10 @@ export interface UseLocationFieldResult {
  * destination) with `applyRadiusCheck` set per design.md's resolved DQ-1.
  */
 export function useLocationField(options: UseLocationFieldOptions): UseLocationFieldResult {
-  const [typedValue, setTypedValue] = useState("");
-  const [status, setStatus] = useState<LocationFieldStatus>("empty");
+  const [typedValue, setTypedValue] = useState(options.initialValue?.label ?? "");
+  const [status, setStatus] = useState<LocationFieldStatus>(options.initialValue ? "resolved" : "empty");
   const [suggestions, setSuggestions] = useState<GeoResult[]>([]);
-  const [resolvedValue, setResolvedValue] = useState<ResolvedLocation | null>(null);
+  const [resolvedValue, setResolvedValue] = useState<ResolvedLocation | null>(options.initialValue ?? null);
   const [isCurrentLocation, setIsCurrentLocation] = useState(false);
 
   const requestSeq = useRef(0);

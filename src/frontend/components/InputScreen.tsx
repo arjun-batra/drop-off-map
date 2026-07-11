@@ -1,12 +1,23 @@
-import { useId, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useState, type KeyboardEvent } from "react";
 import type { PublicConfig } from "../../config/schema";
 import type { GeoResult } from "../../geocoding/types";
-import { useLocationField, type LocationFieldStatus } from "../hooks/useLocationField";
+import type { DropOffSearchLocation, DropOffSearchRequest } from "../../search/types";
+import { useLocationField, type LocationFieldStatus, type ResolvedLocation } from "../hooks/useLocationField";
 import { validateMaxDetourMinutes } from "../validation/detourMinutes";
 import "./InputScreen.css";
 
+export interface InputScreenInitialValues {
+  start: DropOffSearchLocation | null;
+  driverDestination: DropOffSearchLocation | null;
+  passengerDestination: DropOffSearchLocation | null;
+  maxDetourMinutesText: string;
+}
+
 interface InputScreenProps {
   config: PublicConfig;
+  /** Seeds the form from the last-submitted request (ux-spec.md "Edit search"). */
+  initialValues?: InputScreenInitialValues;
+  onSubmit: (request: DropOffSearchRequest) => void;
 }
 
 /**
@@ -14,20 +25,42 @@ interface InputScreenProps {
  *
  * The three location fields are wired to geocoding/autocomplete, "use my
  * current location", and FR-004's radius check (start + driverDestination
- * only -- passengerDestination is exempt per design.md's resolved DQ-1),
- * per INC-2. The max-detour field (FR-002) now validates numeric/positive
- * input with **no upper bound** (design.md section 1.3's explicit user
- * decision -- see ../validation/detourMinutes.ts), per INC-3. The CTA/search
- * pipeline itself (wiring this input into a real search request) remains out
- * of scope until INC-4/INC-6, so the CTA stays disabled with the same
- * "coming in a later increment" caption from INC-1.
+ * only -- passengerDestination is exempt per design.md's resolved DQ-1), per
+ * INC-2. The max-detour field (FR-002) validates numeric/positive input with
+ * **no upper bound** (design.md section 1.3's explicit user decision -- see
+ * ../validation/detourMinutes.ts), per INC-3. Per INC-6, the CTA now submits
+ * a real `DropOffSearchRequest` once all four fields are valid -- SearchFlow.tsx
+ * owns the actual fetch/stage transition, so this component stays a
+ * controlled form that only reports a validated request upward.
  */
-export function InputScreen({ config }: InputScreenProps) {
-  const [maxDetourMinutes, setMaxDetourMinutes] = useState("");
+export function InputScreen({ config, initialValues, onSubmit }: InputScreenProps) {
+  const [maxDetourMinutes, setMaxDetourMinutes] = useState(initialValues?.maxDetourMinutesText ?? "");
   const [detourTouched, setDetourTouched] = useState(false);
+  const [start, setStart] = useState<ResolvedLocation | null>(initialValues?.start ?? null);
+  const [driverDestination, setDriverDestination] = useState<ResolvedLocation | null>(
+    initialValues?.driverDestination ?? null,
+  );
+  const [passengerDestination, setPassengerDestination] = useState<ResolvedLocation | null>(
+    initialValues?.passengerDestination ?? null,
+  );
 
   const detourValidation = validateMaxDetourMinutes(maxDetourMinutes);
   const detourError = detourTouched && !detourValidation.valid ? detourValidation.error : undefined;
+
+  const canSubmit =
+    start !== null && driverDestination !== null && passengerDestination !== null && detourValidation.valid;
+
+  function handleSubmit() {
+    setDetourTouched(true);
+    if (!start || !driverDestination || !passengerDestination || !detourValidation.valid) return;
+
+    onSubmit({
+      start,
+      driverDestination,
+      passengerDestination,
+      maxDetourMinutes: detourValidation.minutes,
+    });
+  }
 
   return (
     <div className="app-shell">
@@ -43,16 +76,22 @@ export function InputScreen({ config }: InputScreenProps) {
           label="Your start point"
           applyRadiusCheck
           config={config}
+          initialValue={initialValues?.start ?? null}
+          onResolvedChange={setStart}
         />
         <LocationField
           label="Your destination"
           applyRadiusCheck
           config={config}
+          initialValue={initialValues?.driverDestination ?? null}
+          onResolvedChange={setDriverDestination}
         />
         <LocationField
           label="Passenger's destination"
           applyRadiusCheck={false}
           config={config}
+          initialValue={initialValues?.passengerDestination ?? null}
+          onResolvedChange={setPassengerDestination}
         />
 
         <div className="input-screen__field">
@@ -82,12 +121,14 @@ export function InputScreen({ config }: InputScreenProps) {
           )}
         </div>
 
-        <button type="button" className="type-body-strong input-screen__cta" disabled>
+        <button
+          type="button"
+          className="type-body-strong input-screen__cta"
+          disabled={!canSubmit}
+          onClick={handleSubmit}
+        >
           Find drop-off points
         </button>
-        <p className="type-caption input-screen__scaffold-note">
-          Search isn&rsquo;t wired up yet — coming in a later increment.
-        </p>
       </div>
     </div>
   );
@@ -97,6 +138,8 @@ interface LocationFieldProps {
   label: string;
   applyRadiusCheck: boolean;
   config: PublicConfig;
+  initialValue?: ResolvedLocation | null;
+  onResolvedChange: (value: ResolvedLocation | null) => void;
 }
 
 const STATUS_HELPER_TEXT: Partial<Record<LocationFieldStatus, string>> = {
@@ -108,17 +151,27 @@ const STATUS_HELPER_TEXT: Partial<Record<LocationFieldStatus, string>> = {
 
 const DANGER_STATUSES: LocationFieldStatus[] = ["unresolvable", "out_of_service_area", "provider_error"];
 
-function LocationField({ label, applyRadiusCheck, config }: LocationFieldProps) {
+function LocationField({ label, applyRadiusCheck, config, initialValue, onResolvedChange }: LocationFieldProps) {
   const field = useLocationField({
     applyRadiusCheck,
     geographicCenter: config.geographicCenter,
     geographicRadiusKm: config.geographicRadiusKm,
     minGeocodeQueryLength: config.minGeocodeQueryLength,
     geocodeDebounceMs: config.geocodeDebounceMs,
+    initialValue: initialValue ?? null,
   });
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(-1);
   const inputId = useId();
   const listboxId = useId();
+
+  // Lifts "is this field validly resolved" up to InputScreen so the CTA's
+  // enabled state and the final submitted request can be derived from a
+  // single source of truth, rather than InputScreen re-deriving it from
+  // three independent hook instances it doesn't otherwise have access to.
+  useEffect(() => {
+    onResolvedChange(field.status === "resolved" ? field.resolvedValue : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [field.status, field.resolvedValue]);
 
   const showSuggestions = field.status === "typing" && field.suggestions.length > 0;
   const isDanger = DANGER_STATUSES.includes(field.status);

@@ -21,6 +21,7 @@ const ROUTES: Record<string, () => Promise<HandlerModule>> = {
   "/route/direct": () => import("../api/route/direct.js"),
   "/candidates/evaluate": () => import("../api/candidates/evaluate.js"),
   "/candidates/transit": () => import("../api/candidates/transit.js"),
+  "/drop-off-search": () => import("../api/drop-off-search.js"),
 };
 
 function readRequestBody(req: IncomingMessage): Promise<string> {

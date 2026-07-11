@@ -133,9 +133,3 @@
 .input-screen__cta:disabled {
   background: var(--color-text-disabled);
 }
-
-.input-screen__scaffold-note {
-  color: var(--color-text-secondary);
-  text-align: center;
-  margin: 0;
-}
