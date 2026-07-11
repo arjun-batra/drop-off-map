@@ -2,6 +2,7 @@ import { useId, useState, type KeyboardEvent } from "react";
 import type { PublicConfig } from "../../config/schema";
 import type { GeoResult } from "../../geocoding/types";
 import { useLocationField, type LocationFieldStatus } from "../hooks/useLocationField";
+import { validateMaxDetourMinutes } from "../validation/detourMinutes";
 import "./InputScreen.css";
 
 interface InputScreenProps {
@@ -11,15 +12,22 @@ interface InputScreenProps {
 /**
  * Screen 1 -- Input Screen, docs/ux-spec.md section 4.
  *
- * INC-2 scope: the three location fields are now fully wired to
- * geocoding/autocomplete, "use my current location", and FR-004's radius
- * check (start + driverDestination only -- passengerDestination is exempt
- * per design.md's resolved DQ-1). The detour field and the CTA/search
- * pipeline itself remain out of scope until INC-3/INC-6, so the CTA stays
- * disabled with the same "coming in a later increment" caption from INC-1.
+ * The three location fields are wired to geocoding/autocomplete, "use my
+ * current location", and FR-004's radius check (start + driverDestination
+ * only -- passengerDestination is exempt per design.md's resolved DQ-1),
+ * per INC-2. The max-detour field (FR-002) now validates numeric/positive
+ * input with **no upper bound** (design.md section 1.3's explicit user
+ * decision -- see ../validation/detourMinutes.ts), per INC-3. The CTA/search
+ * pipeline itself (wiring this input into a real search request) remains out
+ * of scope until INC-4/INC-6, so the CTA stays disabled with the same
+ * "coming in a later increment" caption from INC-1.
  */
 export function InputScreen({ config }: InputScreenProps) {
   const [maxDetourMinutes, setMaxDetourMinutes] = useState("");
+  const [detourTouched, setDetourTouched] = useState(false);
+
+  const detourValidation = validateMaxDetourMinutes(maxDetourMinutes);
+  const detourError = detourTouched && !detourValidation.valid ? detourValidation.error : undefined;
 
   return (
     <div className="app-shell">
@@ -51,15 +59,27 @@ export function InputScreen({ config }: InputScreenProps) {
           <label className="type-label" htmlFor="max-detour-input">
             Max acceptable detour (minutes)
           </label>
-          <input
-            id="max-detour-input"
-            className="type-body input-screen__input focus-ring"
-            type="number"
-            inputMode="numeric"
-            placeholder="e.g. 10"
-            value={maxDetourMinutes}
-            onChange={(event) => setMaxDetourMinutes(event.target.value)}
-          />
+          <div
+            className={`input-screen__input-wrap ${detourError ? "input-screen__input-wrap--error" : ""}`}
+          >
+            <input
+              id="max-detour-input"
+              className="type-body input-screen__input focus-ring"
+              type="number"
+              inputMode="numeric"
+              placeholder="e.g. 10"
+              // FR-002 / design.md section 1.3: numeric, positive, no upper
+              // bound -- deliberately no `max` attribute here.
+              min={0}
+              step="any"
+              value={maxDetourMinutes}
+              onChange={(event) => setMaxDetourMinutes(event.target.value)}
+              onBlur={() => setDetourTouched(true)}
+            />
+          </div>
+          {detourError && (
+            <p className="type-body-small input-screen__helper input-screen__helper--danger">{detourError}</p>
+          )}
         </div>
 
         <button type="button" className="type-body-strong input-screen__cta" disabled>
