@@ -31,6 +31,11 @@ describe("GET /api/config/public", () => {
       minGeocodeQueryLength: 3,
       geocodeDebounceMs: 300,
       responseTimeTargetSeconds: 5,
+      // INC-9: optional tile-provider config, null when unset (validEnv()
+      // doesn't set MAP_TILE_URL_TEMPLATE/MAP_TILE_ATTRIBUTION) -- this is the
+      // documented "map view disabled" default, not a bug.
+      mapTileUrlTemplate: null,
+      mapTileAttribution: null,
     });
   });
 

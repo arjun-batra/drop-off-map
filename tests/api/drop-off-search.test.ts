@@ -552,6 +552,116 @@ describe("POST /api/drop-off-search -- FR-006f, FR-010, FR-011, FR-012, FR-013",
     });
   });
 
+  describe("INC-9 'route' field (design-doc gap flagged by dev, ux-spec.md section 6.7 / design.md section 3.1a)", () => {
+    it("ranked response includes the direct route's decoded polyline, matching the direct-route call's own points", async () => {
+      applyEnv(validEnv());
+      vi.stubGlobal("fetch", makeFetchRouter({}));
+
+      const { req, res, jsonBody } = createMock({ method: "POST", body: requestBody() });
+      await handler(req, res);
+
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("ranked");
+      expect(Array.isArray(body.route)).toBe(true);
+      expect(body.route!.length).toBeGreaterThan(0);
+      // Decoded from ENCODED_POLYLINE (START -> DEST), precision-5 rounding.
+      expect(body.route![0]!.lat).toBeCloseTo(START.lat, 4);
+      expect(body.route![0]!.lng).toBeCloseTo(START.lng, 4);
+      expect(body.route![body.route!.length - 1]!.lat).toBeCloseTo(DEST.lat, 4);
+      expect(body.route![body.route!.length - 1]!.lng).toBeCloseTo(DEST.lng, 4);
+    });
+
+    it("fallback response includes the route field too", async () => {
+      applyEnv(validEnv());
+      vi.stubGlobal("fetch", makeFetchRouter({}));
+
+      const { req, res, jsonBody } = createMock({
+        method: "POST",
+        body: requestBody({ maxDetourMinutes: 0.001 }),
+      });
+      await handler(req, res);
+
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("fallback");
+      expect(Array.isArray(body.route)).toBe(true);
+      expect(body.route!.length).toBeGreaterThan(0);
+    });
+
+    it("no_viable_option response omits the route field (no candidates, nothing to plot)", async () => {
+      applyEnv(validEnv());
+      vi.stubGlobal("fetch", makeFetchRouter({ transitBehavior: () => zeroResultsTransitBody() }));
+
+      const { req, res, jsonBody } = createMock({ method: "POST", body: requestBody() });
+      await handler(req, res);
+
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("no_viable_option");
+      expect(body.route).toBeUndefined();
+    });
+
+    it("out_of_service_area response omits the route field", async () => {
+      applyEnv(validEnv());
+      vi.stubGlobal("fetch", makeFetchRouter({}));
+
+      const { req, res, jsonBody } = createMock({
+        method: "POST",
+        body: requestBody({ driverDestination: LONDON_UK }),
+      });
+      await handler(req, res);
+
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("out_of_service_area");
+      expect(body.route).toBeUndefined();
+    });
+
+    it("invalid_input response omits the route field", async () => {
+      applyEnv(validEnv());
+      const { start, driverDestination, maxDetourMinutes } = requestBody();
+      const { req, res, jsonBody } = createMock({
+        method: "POST",
+        body: { start, driverDestination, maxDetourMinutes },
+      });
+      await handler(req, res);
+
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("invalid_input");
+      expect(body.route).toBeUndefined();
+    });
+
+    it("timeout response omits the route field", async () => {
+      applyEnv(validEnv({ RESPONSE_TIME_TARGET_SECONDS: "0.0001" }));
+      vi.stubGlobal("fetch", makeFetchRouter({}));
+
+      const { req, res, jsonBody } = createMock({ method: "POST", body: requestBody() });
+      await handler(req, res);
+
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("timeout");
+      expect(body.route).toBeUndefined();
+    });
+
+    it("adds no new provider call: `route` is populated from the same single driving-Directions call the FR-006a/b baseline already made, not a second fetch", async () => {
+      applyEnv(validEnv());
+      const router = makeFetchRouter({});
+      vi.stubGlobal("fetch", router);
+
+      const { req, res, jsonBody } = createMock({ method: "POST", body: requestBody() });
+      await handler(req, res);
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.route).toBeTruthy();
+
+      const calls = (router as unknown as { mock: { calls: [string][] } }).mock.calls;
+      const drivingDirectionsCalls = calls.filter(([url]) => {
+        const u = new URL(url);
+        return u.pathname.includes("/directions/") && u.searchParams.get("mode") !== "transit";
+      });
+      // Exactly one driving-Directions call (the FR-006a/b direct-route
+      // baseline, INC-3) -- if INC-9 had added a second call anywhere to
+      // populate `route` independently, this would be 2, not 1.
+      expect(drivingDirectionsCalls).toHaveLength(1);
+    });
+  });
+
   describe("NFR-004 orchestration deadline / timeout status (INC-7, design.md section 6.3)", () => {
     it("an already-elapsed RESPONSE_TIME_TARGET_SECONDS with a nonempty shortlist yields status:timeout, not no_viable_option", async () => {
       applyEnv(validEnv({ RESPONSE_TIME_TARGET_SECONDS: "0.0001" }));

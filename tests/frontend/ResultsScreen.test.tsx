@@ -1,10 +1,63 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PublicConfig } from "../../src/config/schema";
 import { ResultsScreen } from "../../src/frontend/components/ResultsScreen";
 import type { DropOffSearchRequest, DropOffSearchResponse } from "../../src/search/types";
 
+// INC-9: MapView renders real Leaflet, which crashes in jsdom (no SVG
+// renderer support -- confirmed independently: L.polyline().addTo(map)
+// throws "Cannot use 'in' operator to search for '_leaflet_id' in null"
+// under jsdom, a jsdom/Leaflet environment limitation, not a code defect --
+// see docs/test-report.md's INC-9 section). ResultsScreen's own tests mock
+// MapView out entirely so they can verify the *composition* (when the panel
+// is shown/hidden, what props it receives, the tap-to-highlight wiring) --
+// MapView's own internal Leaflet wiring (tile layer, markers, marker
+// variants, polyline) is covered separately in MapView.test.tsx, which mocks
+// the `leaflet` module itself instead of relying on jsdom to run real Leaflet.
+//
+// `mockMapViewSpy` (name starts with "mock", per Vitest's hoisting
+// convention) is safe to reference inside the vi.mock factory below even
+// though vi.mock calls are hoisted above all imports/other statements.
+const mockMapViewSpy = vi.fn();
+vi.mock("../../src/frontend/components/MapView", () => ({
+  MapView: (props: {
+    route: Array<{ lat: number; lng: number }>;
+    candidates: Array<{ rank: number; location: { lat: number; lng: number } }>;
+    variant: "ranked" | "fallback";
+    tileUrlTemplate: string;
+    tileAttribution: string;
+    onSelectCandidate: (rank: number) => void;
+  }) => {
+    mockMapViewSpy(props);
+    return (
+      <div data-testid="mock-map-view" data-variant={props.variant} data-candidate-count={props.candidates.length}>
+        {props.candidates.map((c) => (
+          <button key={c.rank} data-testid={`mock-pin-${c.rank}`} onClick={() => props.onSelectCandidate(c.rank)}>
+            pin {c.rank}
+          </button>
+        ))}
+      </div>
+    );
+  },
+}));
+
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const MAP_CONFIG: Pick<PublicConfig, "mapTileUrlTemplate" | "mapTileAttribution"> = {
+  mapTileUrlTemplate: "https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+  mapTileAttribution: "© OpenStreetMap contributors © CARTO",
+};
+
+const NO_MAP_CONFIG: Pick<PublicConfig, "mapTileUrlTemplate" | "mapTileAttribution"> = {
+  mapTileUrlTemplate: null,
+  mapTileAttribution: null,
+};
+
+const ROUTE = [
+  { lat: 43.6532, lng: -79.3832 },
+  { lat: 43.7, lng: -79.4 },
+];
 
 let container: HTMLDivElement;
 let root: Root;
@@ -12,6 +65,7 @@ let root: Root;
 beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
+  mockMapViewSpy.mockClear();
 });
 
 afterEach(() => {
@@ -28,11 +82,22 @@ const REQUEST: DropOffSearchRequest = {
   maxDetourMinutes: 15,
 };
 
-function render(response: DropOffSearchResponse, onEditSearch = vi.fn(), onTryAgain = vi.fn()) {
+function render(
+  response: DropOffSearchResponse,
+  onEditSearch = vi.fn(),
+  onTryAgain = vi.fn(),
+  mapConfig: Pick<PublicConfig, "mapTileUrlTemplate" | "mapTileAttribution"> = MAP_CONFIG,
+) {
   act(() => {
     root = createRoot(container);
     root.render(
-      <ResultsScreen response={response} request={REQUEST} onEditSearch={onEditSearch} onTryAgain={onTryAgain} />,
+      <ResultsScreen
+        response={response}
+        request={REQUEST}
+        onEditSearch={onEditSearch}
+        onTryAgain={onTryAgain}
+        mapConfig={mapConfig}
+      />,
     );
   });
 }
@@ -302,5 +367,148 @@ describe("ResultsScreen -- ux-spec.md section 6, FR-010/FR-011/FR-012/FR-013", (
     expect(container.textContent).toContain("123 Elm St");
     expect(container.textContent).toContain("456 Bay St");
     expect(container.textContent).toContain("789 King St");
+  });
+
+  describe("Map view (ux-spec.md section 6.7, INC-9)", () => {
+    const RANKED_CANDIDATE = {
+      rank: 1,
+      location: { lat: 43.66, lng: -79.4 },
+      label: "Oak Ave & Main St",
+      routeOrderIndex: 3,
+      driveTimeToDropoffMinutes: 8,
+      detourMinutes: 3,
+      walkTimeMinutes: 4,
+      waitTimeMinutes: 5,
+      transitTimeMinutes: 17,
+      passengerTotalTimeMinutes: 26,
+      driverTotalTimeMinutes: 27,
+      exceedsThreshold: false,
+    };
+
+    const RANKED_RESPONSE: DropOffSearchResponse = {
+      status: "ranked",
+      candidates: [RANKED_CANDIDATE, { ...RANKED_CANDIDATE, rank: 2, label: "Elm St & 2nd Ave" }],
+      requestId: "r1",
+      timingMs: 1200,
+      route: ROUTE,
+    };
+
+    const FALLBACK_RESPONSE: DropOffSearchResponse = {
+      status: "fallback",
+      candidates: [{ ...RANKED_CANDIDATE, exceedsThreshold: true }],
+      warning: "None of the drop-off points found keep your detour under 15 minutes.",
+      requestId: "r1",
+      timingMs: 900,
+      route: ROUTE,
+    };
+
+    it("renders the map panel on a ranked response with a route and tile config present, passing the correct route/candidates/variant through", () => {
+      render(RANKED_RESPONSE);
+      const mapEl = container.querySelector('[data-testid="mock-map-view"]');
+      expect(mapEl).not.toBeNull();
+      expect(mapEl!.getAttribute("data-variant")).toBe("ranked");
+      expect(mapEl!.getAttribute("data-candidate-count")).toBe("2");
+      expect(mockMapViewSpy).toHaveBeenCalledTimes(1);
+      const props = mockMapViewSpy.mock.calls[0]![0] as {
+        route: unknown;
+        tileUrlTemplate: string;
+        tileAttribution: string;
+      };
+      expect(props.route).toEqual(ROUTE);
+      expect(props.tileUrlTemplate).toBe(MAP_CONFIG.mapTileUrlTemplate);
+      expect(props.tileAttribution).toBe(MAP_CONFIG.mapTileAttribution);
+    });
+
+    it("renders the map panel on a fallback response, with the 'fallback' variant and exactly one candidate", () => {
+      render(FALLBACK_RESPONSE);
+      const mapEl = container.querySelector('[data-testid="mock-map-view"]');
+      expect(mapEl).not.toBeNull();
+      expect(mapEl!.getAttribute("data-variant")).toBe("fallback");
+      expect(mapEl!.getAttribute("data-candidate-count")).toBe("1");
+    });
+
+    it("configurability: a differently-configured tile provider is passed through, not a hardcoded URL/attribution", () => {
+      const customConfig = {
+        mapTileUrlTemplate: "https://tiles.example.org/{z}/{x}/{y}.png",
+        mapTileAttribution: "(c) Example Tiles Inc.",
+      };
+      render(RANKED_RESPONSE, vi.fn(), vi.fn(), customConfig);
+      const props = mockMapViewSpy.mock.calls[0]![0] as { tileUrlTemplate: string; tileAttribution: string };
+      expect(props.tileUrlTemplate).toBe(customConfig.mapTileUrlTemplate);
+      expect(props.tileAttribution).toBe(customConfig.mapTileAttribution);
+    });
+
+    it("gracefully omits the map (not shown broken) on no_viable_option, even though tile config is present -- there is nothing to plot", () => {
+      render({ status: "no_viable_option", candidates: [], message: "msg", requestId: "r1", timingMs: 1 });
+      expect(container.querySelector('[data-testid="mock-map-view"]')).toBeNull();
+      expect(mockMapViewSpy).not.toHaveBeenCalled();
+    });
+
+    it("gracefully omits the map on out_of_service_area/invalid_input/timeout as well", () => {
+      const statuses: DropOffSearchResponse["status"][] = ["out_of_service_area", "invalid_input", "timeout"];
+      for (const status of statuses) {
+        render({ status, candidates: [], message: "msg", requestId: "r1", timingMs: 1 });
+        expect(container.querySelector('[data-testid="mock-map-view"]')).toBeNull();
+        act(() => root.unmount());
+        container.remove();
+        container = document.createElement("div");
+        document.body.appendChild(container);
+      }
+    });
+
+    it("gracefully omits the map when the tile provider isn't configured (mapTileUrlTemplate/mapTileAttribution null), while the candidate cards still render fine", () => {
+      render(RANKED_RESPONSE, vi.fn(), vi.fn(), NO_MAP_CONFIG);
+      expect(container.querySelector('[data-testid="mock-map-view"]')).toBeNull();
+      expect(mockMapViewSpy).not.toHaveBeenCalled();
+      // Cards must still render normally -- the map is the *only* thing
+      // gated by tile config, not the rest of the Results screen.
+      expect(container.querySelectorAll(".results-screen__card")).toHaveLength(2);
+      expect(container.textContent).toContain("Oak Ave & Main St");
+    });
+
+    it("gracefully omits the map when only one of the two tile-config values is set (belt-and-suspenders -- both must be present)", () => {
+      render(RANKED_RESPONSE, vi.fn(), vi.fn(), {
+        mapTileUrlTemplate: "https://tiles.example.org/{z}/{x}/{y}.png",
+        mapTileAttribution: null,
+      });
+      expect(container.querySelector('[data-testid="mock-map-view"]')).toBeNull();
+    });
+
+    it("gracefully omits the map on a ranked/fallback response with no route field at all (defensive, belt-and-suspenders check), while cards still render", () => {
+      const responseWithoutRoute: DropOffSearchResponse = { ...RANKED_RESPONSE, route: undefined };
+      render(responseWithoutRoute);
+      expect(container.querySelector('[data-testid="mock-map-view"]')).toBeNull();
+      expect(container.querySelectorAll(".results-screen__card")).toHaveLength(2);
+    });
+
+    it("tap-to-highlight: clicking a map pin flashes/scrolls the matching card, not a different one", () => {
+      render(RANKED_RESPONSE);
+      const scrollSpy = vi.fn();
+      const card2 = document.getElementById("results-screen-card-2")!;
+      card2.scrollIntoView = scrollSpy;
+      const card1 = document.getElementById("results-screen-card-1")!;
+      card1.scrollIntoView = vi.fn();
+
+      const pin2 = container.querySelector('[data-testid="mock-pin-2"]') as HTMLButtonElement;
+      act(() => {
+        pin2.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+
+      expect(card2.className).toContain("results-screen__card--flash");
+      expect(card1.className).not.toContain("results-screen__card--flash");
+      expect(scrollSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("tapping a card does not re-center the map (one-directional interaction only, per ux-spec.md section 6.7) -- no onSelectCandidate call originates from a card click", () => {
+      render(RANKED_RESPONSE);
+      mockMapViewSpy.mockClear();
+      const card1 = document.getElementById("results-screen-card-1")!;
+      act(() => {
+        card1.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      // No re-render of MapView with different props should be triggered by
+      // a card click alone (highlightedRank only changes via a pin click).
+      expect(mockMapViewSpy).not.toHaveBeenCalled();
+    });
   });
 });

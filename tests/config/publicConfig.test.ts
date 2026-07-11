@@ -4,7 +4,7 @@ import { toPublicConfig } from "../../src/config/publicConfig";
 import { validPaidTierEnv } from "../helpers/testEnv";
 
 describe("toPublicConfig", () => {
-  it("returns exactly the 8 fields design.md section 5.2 specifies (5 original + minGeocodeQueryLength/geocodeDebounceMs per REV-006/REV-007 + responseTimeTargetSeconds per INC-7), no more no less", () => {
+  it("returns exactly the 10 fields design.md section 5.2 specifies (5 original + minGeocodeQueryLength/geocodeDebounceMs per REV-006/REV-007 + responseTimeTargetSeconds per INC-7 + mapTileUrlTemplate/mapTileAttribution per INC-9), no more no less", () => {
     const config = loadConfig(validPaidTierEnv("super-secret-password"));
     const publicConfig = toPublicConfig(config);
     expect(Object.keys(publicConfig).sort()).toEqual(
@@ -17,8 +17,29 @@ describe("toPublicConfig", () => {
         "minGeocodeQueryLength",
         "geocodeDebounceMs",
         "responseTimeTargetSeconds",
+        "mapTileUrlTemplate",
+        "mapTileAttribution",
       ].sort(),
     );
+  });
+
+  it("configurability: reflects changed MAP_TILE_URL_TEMPLATE/MAP_TILE_ATTRIBUTION rather than fixed/null values (INC-9)", () => {
+    const config = loadConfig(
+      validPaidTierEnv("super-secret-password", {
+        MAP_TILE_URL_TEMPLATE: "https://tiles.example.com/{z}/{x}/{y}.png",
+        MAP_TILE_ATTRIBUTION: "(c) Example Tiles",
+      }),
+    );
+    const publicConfig = toPublicConfig(config);
+    expect(publicConfig.mapTileUrlTemplate).toBe("https://tiles.example.com/{z}/{x}/{y}.png");
+    expect(publicConfig.mapTileAttribution).toBe("(c) Example Tiles");
+  });
+
+  it("mapTileUrlTemplate/mapTileAttribution are null when unset, not a hardcoded default (INC-9)", () => {
+    const config = loadConfig(validPaidTierEnv("super-secret-password"));
+    const publicConfig = toPublicConfig(config);
+    expect(publicConfig.mapTileUrlTemplate).toBeNull();
+    expect(publicConfig.mapTileAttribution).toBeNull();
   });
 
   it("configurability: reflects a changed MIN_GEOCODE_QUERY_LENGTH/GEOCODE_DEBOUNCE_MS rather than fixed values (REV-006/REV-007)", () => {

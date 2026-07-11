@@ -21,6 +21,8 @@ const config: PublicConfig = {
   minGeocodeQueryLength: 3,
   geocodeDebounceMs: 300,
   responseTimeTargetSeconds: 5,
+  mapTileUrlTemplate: null,
+  mapTileAttribution: null,
 };
 
 const RESOLVED = { lat: 43.66, lng: -79.4, label: "456 Bay St, Toronto, ON" };

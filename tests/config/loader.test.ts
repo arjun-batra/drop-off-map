@@ -49,6 +49,12 @@ describe("loadConfig -- happy path", () => {
       minGeocodeQueryLength: 3,
       geocodeDebounceMs: 300,
       sessionLifetimeSeconds: 3600,
+      // INC-9: optional, null when MAP_TILE_URL_TEMPLATE/MAP_TILE_ATTRIBUTION
+      // are unset (validEnv() doesn't set them) -- the documented "map view
+      // disabled" default, not a hardcoded fallback (see loader.ts's
+      // parseOptionalString, which never pushes a `problems` entry either way).
+      mapTileUrlTemplate: null,
+      mapTileAttribution: null,
     });
   });
 
@@ -121,6 +127,61 @@ describe("loadConfig -- configurability (catches hardcoded values)", () => {
   it("reflects a changed SESSION_LIFETIME_SECONDS value rather than a hardcoded lifetime (REV-002)", () => {
     const config = loadConfig(validEnv({ SESSION_LIFETIME_SECONDS: "60" }));
     expect(config.sessionLifetimeSeconds).toBe(60);
+  });
+
+  it("reflects a changed MAP_TILE_URL_TEMPLATE/MAP_TILE_ATTRIBUTION rather than a hardcoded provider (INC-9, design.md section 3.1a)", () => {
+    const config = loadConfig(
+      validEnv({
+        MAP_TILE_URL_TEMPLATE: "https://tiles.example.org/{z}/{x}/{y}.png",
+        MAP_TILE_ATTRIBUTION: "(c) Example Tiles Inc.",
+      }),
+    );
+    expect(config.mapTileUrlTemplate).toBe("https://tiles.example.org/{z}/{x}/{y}.png");
+    expect(config.mapTileAttribution).toBe("(c) Example Tiles Inc.");
+  });
+});
+
+describe("loadConfig -- MAP_TILE_URL_TEMPLATE/MAP_TILE_ATTRIBUTION are optional (INC-9), unlike every other key in this schema", () => {
+  it("does NOT fail config loading when both are entirely unset -- 'map view disabled' is a valid, supported configuration, not a misconfiguration", () => {
+    const env = validEnv();
+    delete env.MAP_TILE_URL_TEMPLATE;
+    delete env.MAP_TILE_ATTRIBUTION;
+    expect(() => loadConfig(env)).not.toThrow();
+    const config = loadConfig(env);
+    expect(config.mapTileUrlTemplate).toBeNull();
+    expect(config.mapTileAttribution).toBeNull();
+  });
+
+  it("does NOT fail when only one of the two is set (the frontend's own showMap check is what enforces 'both or neither', not the loader)", () => {
+    const env = validEnv({ MAP_TILE_URL_TEMPLATE: "https://tiles.example.org/{z}/{x}/{y}.png" });
+    delete env.MAP_TILE_ATTRIBUTION;
+    expect(() => loadConfig(env)).not.toThrow();
+    const config = loadConfig(env);
+    expect(config.mapTileUrlTemplate).toBe("https://tiles.example.org/{z}/{x}/{y}.png");
+    expect(config.mapTileAttribution).toBeNull();
+  });
+
+  it("treats a whitespace-only value as unset (null), not as a literal whitespace string", () => {
+    const config = loadConfig(validEnv({ MAP_TILE_URL_TEMPLATE: "   ", MAP_TILE_ATTRIBUTION: "  " }));
+    expect(config.mapTileUrlTemplate).toBeNull();
+    expect(config.mapTileAttribution).toBeNull();
+  });
+
+  it("every OTHER config key remains required-with-no-fallback even when the map-tile keys are unset -- the optionality is scoped to exactly these two keys, not a general relaxation", () => {
+    const env = validEnv();
+    delete env.MAP_TILE_URL_TEMPLATE;
+    delete env.MAP_TILE_ATTRIBUTION;
+    delete env.MAP_API_KEY;
+    expect(() => loadConfig(env)).toThrow(ConfigError);
+    try {
+      loadConfig(env);
+    } catch (err) {
+      expect((err as ConfigError).problems.some((p) => p.includes("MAP_API_KEY"))).toBe(true);
+      // The two map-tile keys must never appear in the problem list -- they
+      // are optional, so their absence is never itself a "problem".
+      expect((err as ConfigError).problems.some((p) => p.includes("MAP_TILE_URL_TEMPLATE"))).toBe(false);
+      expect((err as ConfigError).problems.some((p) => p.includes("MAP_TILE_ATTRIBUTION"))).toBe(false);
+    }
   });
 });
 
