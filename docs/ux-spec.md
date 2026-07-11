@@ -327,7 +327,7 @@ Replaces the form (not a modal over it) once submission starts. Full-viewport, c
 - Icon: warning triangle. Text: `type-body-strong`, `color-warning-text` on `color-warning-bg`, `color-warning-border` bottom border.
 - Exact copy (do not soften or shorten — this reflects an explicit user decision, not a suggestion):
   > "This is an estimated drop-off point only. Before stopping, confirm it's safe and legal to pull over here."
-- This banner is present on every results state, including the fallback state and, if applicable, is the one non-negotiable element that must render even if other rendering fails.
+- **Scope, made explicit (closes REV-015):** the disclaimer is present on every results state **that shows at least one suggested drop-off point** — that is, `ranked` (§6.4) and `fallback` (§6.5) — and on those two states it is the one non-negotiable element that must render even if other rendering fails (this is what REV-012's fix guarantees structurally, via a component-tree boundary that survives a crash in the candidate-rendering code). It is deliberately **not** shown on the `no_viable_option` empty state (§6.6), because the disclaimer's purpose is to caution the driver about a *specific suggested point* before using it, and that state has no point on screen to caution about. The same reasoning excludes it from the input-time out-of-radius block (§4.1) and the system/network failure state (§7) — neither of those ever shows a suggested point either, so neither shows the disclaimer. This scope (`candidates.length > 0`) matches design.md §5.2's contract and the shipped INC-7 implementation exactly; no code change follows from this clarification. See §6.6 for the empty-state mockup and the same reasoning restated there.
 
 ### 6.3 Trip summary + "Edit search"
 
@@ -363,8 +363,6 @@ If the system cannot produce even one candidate (e.g., no transit reachable from
 
 ```
 ┌───────────────────────────────────┐
-│ ⚠ This is an estimated drop-off …  │  disclaimer still shown (harmless,
-├───────────────────────────────────┤   consistent — no reason to hide it)
 │                                     │
 │         (map-pin-slash icon)        │
 │                                     │
@@ -382,6 +380,8 @@ If the system cannot produce even one candidate (e.g., no transit reachable from
 │  └───────────────────────────────┘ │
 └───────────────────────────────────┘
 ```
+
+**Disclaimer, decided (closes REV-015): the disclaimer banner does NOT render on this state.** An earlier version of this spec showed the banner here with the annotation "harmless, consistent — no reason to hide it." That annotation is superseded and should be disregarded — it created a real conflict with design.md §5.2's narrower, `candidates.length > 0`-scoped contract (logged as REV-015). Final decision: this state has no suggested drop-off point on screen, and the disclaimer's entire purpose (§6.2, §0 principle 2) is to caution the driver about a specific suggested point before using it — there is nothing here to caution about, so the banner is omitted, not hidden-but-present. This matches design.md §5.2 and the shipped INC-7 implementation (`showDisclaimer` is `false` whenever `candidates.length === 0`) exactly; no code change follows from this clarification. See §6.2 for the full scope statement, which applies identically to `out_of_service_area`/`invalid_input`/`timeout` (§7) — none of these states show the disclaimer, for the same reason.
 
 Note this is distinct from the out-of-radius case (Screen 1, §4.1), which blocks earlier at input time and never reaches computation.
 
@@ -467,3 +467,4 @@ All prior open questions have been resolved by the user (see below). One item re
 | Date | Change |
 |---|---|
 | 2026-07-11 | Added "Lookup failed (provider/network error)" to §4.1's field-states table, closing the traceability gap flagged in review-log.md REV-008. This documents the state dev added during INC-2 for when a geocoding lookup itself fails to complete (network/provider error), distinct from "Unresolvable address" (lookup completed, no match found). Copy: "We couldn't check that address right now. Please try again." Applies to all three location fields (lookup-mechanism failure, not field-specific business logic). User confirmed keeping this addition. |
+| 2026-07-11 | **Closes REV-015.** Resolved the §6.2/§6.6 disclaimer-scope ambiguity the reviewer flagged: §6.6's `no_viable_option` mockup previously showed the disclaimer banner present with an annotation ("harmless, consistent — no reason to hide it") that conflicted with design.md §5.2's narrower `candidates.length > 0` contract and the shipped INC-7 code. **Decision: the disclaimer is scoped to `ranked`/`fallback` only** (states that show a suggested drop-off point) and is explicitly **not** shown on `no_viable_option`, `out_of_service_area`, `invalid_input`, or `timeout`/system-failure states. Rationale: the disclaimer's purpose is to caution the driver about a *specific suggested point* before using it (§0 principle 2); a state with no point on screen has nothing to caution about. This choice matches the already-implemented behavior — no code change required. §6.2 now states this scope explicitly; §6.6's mockup no longer shows the banner and its annotation is superseded. Designer judgment call, not escalated to the user (reviewer confirmed no candidate is ever shown without the disclaimer under either reading, so no safety exposure was at stake either way). |
