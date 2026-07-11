@@ -9,12 +9,22 @@ export interface TransitResult {
   transitTimeMinutes: number;
   passengerTotalTimeMinutes: number;
   /**
-   * True when the shortlisted candidate has no viable transit itinerary at
-   * all (design.md section 4.4 step 13) -- distinct from a whole-request
-   * provider failure (RoutingProviderError, thrown, never reaches this
-   * shape). A candidate with `noTransitAvailable: true` is excluded from
-   * INC-6's ranking/fallback consideration but retained for FR-012's
-   * "no viable option at all" check.
+   * True when the shortlisted candidate has genuinely no viable route at all
+   * to the passenger's destination (design.md section 4.4 step 13 -- e.g.
+   * Google's Directions API returns `ZERO_RESULTS` or an empty route list)
+   * -- distinct from a whole-request provider failure (RoutingProviderError,
+   * thrown, never reaches this shape). A candidate with
+   * `noTransitAvailable: true` is excluded from INC-6's ranking/fallback
+   * consideration but retained for FR-012's "no viable option at all" check.
+   *
+   * A walking-only route (Google returns a route with no TRANSIT-mode steps
+   * because the candidate is already close enough to the passenger's
+   * destination) is NOT this case -- per the user's resolution of the
+   * judgment call originally flagged in docs/handoff.md's INC-5 section, it
+   * is a genuinely good, valid result (near-zero `transitTimeMinutes`,
+   * `waitTimeMinutes: 0`, `walkTimeMinutes`/`passengerTotalTimeMinutes`
+   * equal to the full walk) and is reported with `noTransitAvailable: false`
+   * so it ranks normally alongside real-transit candidates.
    */
   noTransitAvailable: boolean;
 }

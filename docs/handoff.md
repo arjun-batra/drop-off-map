@@ -463,3 +463,38 @@ INC-6's `Ranker` needs: (a) `qualifies`/`noTransitAvailable`/`passengerTotalTime
 5. **Real-`MAP_API_KEY` live-transit-data verification gap** (see Smoke test section's final bullet) — broader in scope than INC-3's REV-010 (live traffic), since it covers both live-schedule-vs-static-schedule value differences *and* real-world transit-mode response-shape parsing (multi-agency GTFS-RT data quality near Toronto is an explicitly-flagged, not-fully-validated idea-brief risk, design.md section 9). Recommend QA/release treat this as an expansion of REV-010's existing tracked pre-Phase-4 closure condition rather than a separate item, but the broadened scope should be visible in the tracking, not silently folded in.
 6. **`api/candidates/transit.ts` is intentionally a temporary/dev-facing debug endpoint**, matching the `api/route/direct.ts` (INC-3) / `api/candidates/evaluate.ts` (INC-4) precedent — not `/api/drop-off-search` (design.md section 5.2). It performs no FR-003/FR-004 validation-ordering (`invalid_input`/`out_of_service_area` semantics belong to the real search endpoint, INC-6) and returns only the shortlisted/transit-evaluated candidates, not the full raw pool (already covered by INC-4's endpoint). Expect this endpoint to be superseded once `/api/drop-off-search` exists.
 7. **Ranking, tie-break (FR-010), fallback (FR-011), no-viable-option (FR-012), and full `DropOffSearchResponse` output are explicitly out of scope** (INC-6). Every candidate returned by this increment's endpoint has full transit data or `noTransitAvailable: true`, but nothing is yet sorted/filtered/labeled for end-user display. The CTA and full search flow remain unwired, unchanged from INC-3/INC-4.
+
+---
+
+# Follow-up fix on INC-5 (2026-07-11): walking-only transit response reclassified as a valid result
+
+Status: implemented, smoke-tested (typecheck/lint/build clean, full 266-test suite unaffected/passing since no committed tests exist for `src/transit/` yet). Resolves the judgment call flagged in known limitation #3 above, per the user's explicit decision routed through the orchestrator: a walking-only Google transit response (the candidate is close enough to the passenger's destination that Google's `mode=transit` call returns a route with zero actual `TRANSIT`-mode steps) is **a genuinely good outcome for the family member** and must rank normally alongside real-transit candidates, not be excluded to only the FR-011 fallback path.
+
+## What changed
+
+**`src/transit/googleTransitDirectionsService.ts`**, `evaluate()`: removed the `if (!parsed.sawTransitStep) return { ...NO_TRANSIT_RESULT }` branch. A walking-only route (`parsed.sawTransitStep === false`) now falls through to the same `return` used for a genuine transit itinerary, with `noTransitAvailable: false`. No new arithmetic was needed — `parseTransitRoute()`'s existing formulas already produce exactly the right numbers for this case by construction:
+- `walkTimeMinutes` / `passengerTotalTimeMinutes` = the route's full walking duration (there's no separate "walk to stop" leg when the entire route is walking — the whole route IS the walk).
+- `waitTimeMinutes` = 0 (nothing ever accumulates into it when there are zero `TRANSIT` steps — no vehicle to wait for).
+- `transitTimeMinutes` = 0 (same reason — this is the "near-zero or zero transit-specific time" the orchestrator asked for; in practice it's exactly zero since a walking-only route has no in-vehicle step at all).
+
+Genuine zero-viable-route cases are unaffected and still correctly return `noTransitAvailable: true`: Google's `ZERO_RESULTS` status, and an empty/missing `routes` array or a route with zero legs. Only the "route exists but has no TRANSIT steps" case changed.
+
+**`src/transit/types.ts`**: updated `TransitResult.noTransitAvailable`'s doc comment to state the narrower, correct scope (genuine no-viable-route cases only) and explicitly calls out that a walking-only route is not one of them.
+
+**`src/transit/googleTransitDirectionsService.ts`**, `parseTransitRoute()`'s doc comment: updated to describe `sawTransitStep: false` as a valid near-zero-transit result rather than a de-facto `noTransitAvailable` case, and to note the formulas need no special-casing for it.
+
+## Manual verification performed (no committed tests for this module yet — QA owns `tests/transit/`)
+
+Ran `createGoogleTransitService(...).evaluate()` and `parseTransitRoute()` directly against hand-built mocked-`fetch` fixtures (temporary local script, not committed):
+- Walking-only route (one `WALKING` step, 180s, zero `TRANSIT` steps) → `{ walkTimeMinutes: 3, waitTimeMinutes: 0, transitTimeMinutes: 0, passengerTotalTimeMinutes: 3, noTransitAvailable: false }` — confirms the fix's exact intended shape.
+- Google `ZERO_RESULTS` status → still `{ ...zeros, noTransitAvailable: true }` — confirms the genuine-no-route case is untouched.
+- A real 2-step itinerary (walk 5min + transit ride 10min with a wait) → parsed correctly (`walkTimeMinutes: 5`, `waitTimeMinutes` and `transitTimeMinutes` both nonzero, `noTransitAvailable: false`) — confirms real transit itineraries are unaffected by the change.
+
+## Files touched
+
+- `src/transit/googleTransitDirectionsService.ts`
+- `src/transit/types.ts`
+
+## Known limitation / heads-up for QA
+
+QA has not yet run its INC-5 pass, so there is no pre-existing `tests/transit/` fixture set to update — this fix simply needs to be reflected in whatever fixtures QA writes for `parseTransitRoute()`/`createGoogleTransitService()`'s walking-only case (expect `noTransitAvailable: false`, not `true`). INC-6's `Ranker`/fallback logic (not yet built) should treat these candidates as ordinary ranking candidates with a very small `passengerTotalTimeMinutes` — no special-case branch is needed there either, since `noTransitAvailable: false` is now the only signal INC-6 needs to include them in normal ranking.
