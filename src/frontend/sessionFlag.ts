@@ -22,3 +22,18 @@ export function setClientSessionFlag(): void {
     // Non-fatal: worst case, the user is re-prompted next navigation.
   }
 }
+
+/**
+ * REV-002/INC-8 re-auth behavior: called when a protected endpoint reports
+ * the server-side session cookie has expired (401), so this client-side
+ * convenience flag doesn't keep claiming "already authenticated" for a
+ * session the server no longer honors -- otherwise a reload would skip the
+ * Password Gate (per this flag) only to immediately fail every real request.
+ */
+export function clearClientSessionFlag(): void {
+  try {
+    sessionStorage.removeItem(SESSION_FLAG_KEY);
+  } catch {
+    // Non-fatal: worst case, the stale flag lingers until the tab closes.
+  }
+}

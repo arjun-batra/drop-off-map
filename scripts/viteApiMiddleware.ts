@@ -14,13 +14,15 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 
 type HandlerModule = { default: (req: VercelRequest, res: VercelResponse) => unknown | Promise<unknown> };
 
+// INC-8/REV-013: the INC-3/4/5 debug endpoints (/route/direct,
+// /candidates/evaluate, /candidates/transit) have been retired now that
+// /api/drop-off-search (INC-6) has fully superseded them -- see
+// api/drop-off-search.ts's module comment and docs/handoff.md's INC-8
+// section for the full reasoning.
 const ROUTES: Record<string, () => Promise<HandlerModule>> = {
   "/config/public": () => import("../api/config/public.js"),
   "/auth/verify-password": () => import("../api/auth/verify-password.js"),
   "/geocode": () => import("../api/geocode.js"),
-  "/route/direct": () => import("../api/route/direct.js"),
-  "/candidates/evaluate": () => import("../api/candidates/evaluate.js"),
-  "/candidates/transit": () => import("../api/candidates/transit.js"),
   "/drop-off-search": () => import("../api/drop-off-search.js"),
 };
 

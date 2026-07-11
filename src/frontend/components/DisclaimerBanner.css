@@ -3,7 +3,7 @@
   top: 0;
   z-index: 20;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-sm);
   background: var(--color-warning-bg);
   color: var(--color-warning-text);
@@ -14,4 +14,13 @@
 
 .disclaimer-banner__icon {
   flex: none;
+}
+
+.disclaimer-banner span:last-child {
+  /* Mobile polish: on the narrowest phone viewports the full copy needs to
+     wrap across multiple lines rather than force the banner (or the page)
+     to overflow horizontally. min-width: 0 is the standard flexbox fix for
+     a text child that would otherwise refuse to shrink below its
+     one-line content width. */
+  min-width: 0;
 }

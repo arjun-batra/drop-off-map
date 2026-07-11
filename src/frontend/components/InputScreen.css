@@ -81,6 +81,9 @@
 }
 
 .input-screen__suggestion {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
   padding: var(--space-sm);
   cursor: pointer;
   color: var(--color-text-primary);
@@ -121,15 +124,32 @@
   min-height: 44px;
 }
 
+.input-screen__cta-bar {
+  /*
+   * ux-spec.md section 4: sticky CTA once the user has scrolled past it, so
+   * it's always reachable without scrolling back up. `--color-bg-page`
+   * background prevents field content from visibly showing through/behind
+   * the bar while it's stuck.
+   */
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  background: var(--color-bg-page);
+  padding: var(--space-sm) 0 var(--space-xs);
+  margin-bottom: calc(var(--space-xs) * -1);
+}
+
 .input-screen__cta {
+  width: 100%;
   border: none;
   border-radius: var(--radius-md);
   background: var(--color-brand-primary);
   color: var(--color-on-brand-primary);
   min-height: 44px;
-  cursor: not-allowed;
+  cursor: pointer;
 }
 
 .input-screen__cta:disabled {
   background: var(--color-text-disabled);
+  cursor: not-allowed;
 }

@@ -18,6 +18,16 @@ interface InputScreenProps {
   /** Seeds the form from the last-submitted request (ux-spec.md "Edit search"). */
   initialValues?: InputScreenInitialValues;
   onSubmit: (request: DropOffSearchRequest) => void;
+  /**
+   * REV-002/INC-8 re-auth behavior: a geocode lookup mid-typing can also
+   * return 401 if the paid_tier session expired while the user was on this
+   * screen. Threaded down to every LocationField so any of the three fields
+   * hitting this triggers the same drop-back-to-Password-Gate behavior as a
+   * 401 on the search endpoint itself (see SearchFlow.tsx), instead of
+   * showing the generic "couldn't check that address" copy for what is
+   * actually an auth problem, not a provider problem.
+   */
+  onSessionExpired?: () => void;
 }
 
 /**
@@ -33,7 +43,7 @@ interface InputScreenProps {
  * owns the actual fetch/stage transition, so this component stays a
  * controlled form that only reports a validated request upward.
  */
-export function InputScreen({ config, initialValues, onSubmit }: InputScreenProps) {
+export function InputScreen({ config, initialValues, onSubmit, onSessionExpired }: InputScreenProps) {
   const [maxDetourMinutes, setMaxDetourMinutes] = useState(initialValues?.maxDetourMinutesText ?? "");
   const [detourTouched, setDetourTouched] = useState(false);
   const [start, setStart] = useState<ResolvedLocation | null>(initialValues?.start ?? null);
@@ -78,6 +88,7 @@ export function InputScreen({ config, initialValues, onSubmit }: InputScreenProp
           config={config}
           initialValue={initialValues?.start ?? null}
           onResolvedChange={setStart}
+          onSessionExpired={onSessionExpired}
         />
         <LocationField
           label="Your destination"
@@ -85,6 +96,7 @@ export function InputScreen({ config, initialValues, onSubmit }: InputScreenProp
           config={config}
           initialValue={initialValues?.driverDestination ?? null}
           onResolvedChange={setDriverDestination}
+          onSessionExpired={onSessionExpired}
         />
         <LocationField
           label="Passenger's destination"
@@ -92,6 +104,7 @@ export function InputScreen({ config, initialValues, onSubmit }: InputScreenProp
           config={config}
           initialValue={initialValues?.passengerDestination ?? null}
           onResolvedChange={setPassengerDestination}
+          onSessionExpired={onSessionExpired}
         />
 
         <div className="input-screen__field">
@@ -121,14 +134,23 @@ export function InputScreen({ config, initialValues, onSubmit }: InputScreenProp
           )}
         </div>
 
-        <button
-          type="button"
-          className="type-body-strong input-screen__cta"
-          disabled={!canSubmit}
-          onClick={handleSubmit}
-        >
-          Find drop-off points
-        </button>
+        {/*
+          ux-spec.md section 4: "the primary CTA is sticky-positioned at the
+          bottom of the viewport once the user has scrolled past it, so it's
+          always reachable without scrolling back up." `position: sticky` on
+          this wrapper (see InputScreen.css) achieves that without a second
+          fixed-position layer to keep in sync with the form's own scroll.
+        */}
+        <div className="input-screen__cta-bar">
+          <button
+            type="button"
+            className="type-body-strong input-screen__cta"
+            disabled={!canSubmit}
+            onClick={handleSubmit}
+          >
+            Find drop-off points
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -140,6 +162,7 @@ interface LocationFieldProps {
   config: PublicConfig;
   initialValue?: ResolvedLocation | null;
   onResolvedChange: (value: ResolvedLocation | null) => void;
+  onSessionExpired?: () => void;
 }
 
 const STATUS_HELPER_TEXT: Partial<Record<LocationFieldStatus, string>> = {
@@ -151,7 +174,14 @@ const STATUS_HELPER_TEXT: Partial<Record<LocationFieldStatus, string>> = {
 
 const DANGER_STATUSES: LocationFieldStatus[] = ["unresolvable", "out_of_service_area", "provider_error"];
 
-function LocationField({ label, applyRadiusCheck, config, initialValue, onResolvedChange }: LocationFieldProps) {
+function LocationField({
+  label,
+  applyRadiusCheck,
+  config,
+  initialValue,
+  onResolvedChange,
+  onSessionExpired,
+}: LocationFieldProps) {
   const field = useLocationField({
     applyRadiusCheck,
     geographicCenter: config.geographicCenter,
@@ -159,6 +189,7 @@ function LocationField({ label, applyRadiusCheck, config, initialValue, onResolv
     minGeocodeQueryLength: config.minGeocodeQueryLength,
     geocodeDebounceMs: config.geocodeDebounceMs,
     initialValue: initialValue ?? null,
+    onSessionExpired,
   });
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(-1);
   const inputId = useId();

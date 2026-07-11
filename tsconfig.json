@@ -16,5 +16,5 @@
     "allowJs": false,
     "types": ["node"]
   },
-  "include": ["src", "api", "scripts", "vite.config.ts"]
+  "include": ["src", "api", "scripts", "vite.config.ts", "tests"]
 }

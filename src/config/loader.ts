@@ -152,6 +152,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
   const providerConcurrencyLimit = parsePositiveNumber(env, "PROVIDER_CONCURRENCY_LIMIT", problems, true);
   const minGeocodeQueryLength = parsePositiveNumber(env, "MIN_GEOCODE_QUERY_LENGTH", problems, true);
   const geocodeDebounceMs = parsePositiveNumber(env, "GEOCODE_DEBOUNCE_MS", problems, true);
+  const sessionLifetimeSeconds = parsePositiveNumber(env, "SESSION_LIFETIME_SECONDS", problems, true);
   const paidTierAccessPassword = parsePaidTierAccessPassword(env, appMode, problems);
 
   if (problems.length > 0) {
@@ -176,5 +177,6 @@ export function loadConfig(env: Env = process.env): AppConfig {
     providerConcurrencyLimit,
     minGeocodeQueryLength,
     geocodeDebounceMs,
+    sessionLifetimeSeconds,
   };
 }

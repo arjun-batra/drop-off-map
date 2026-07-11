@@ -55,14 +55,20 @@ function parseSearchRequest(body: unknown): DropOffSearchRequest | undefined {
  * evaluation -> shortlist -> transit evaluation -> rank/fallback/no-viable
  * -> reverse-geocoded labels for only the final returned candidates.
  *
- * This is additive, not a replacement: `/api/route/direct` (INC-3),
- * `/api/candidates/evaluate` (INC-4), and `/api/candidates/transit` (INC-5)
- * are kept as-is, unchanged. Design.md never instructs removing them once
- * this endpoint exists (each increment's own note says only "not yet the
- * final endpoint", never "delete once superseded"), and QA's existing
- * regression suite already exercises them directly -- removing them would
- * silently break passing tests QA owns, which is not dev's call to make
- * unilaterally. See docs/handoff.md's INC-6 section for the full reasoning.
+ * INC-8/REV-013: the temporary INC-3/4/5 debug endpoints
+ * (`/api/route/direct`, `/api/candidates/evaluate`, `/api/candidates/transit`)
+ * have been retired (deleted, not just deprecated) now that this endpoint
+ * has fully superseded them for over two increments and every code path
+ * they existed to validate (direct route, candidate generation, detour
+ * evaluation, transit evaluation) is exercised end-to-end by this handler
+ * and by each underlying module's own unit tests. Retiring them also
+ * closes REV-013 (the HTTP-status-convention inconsistency between this
+ * endpoint's uniform-200 business outcomes and the debug endpoints' real
+ * 4xx codes) by removing the inconsistency's other side entirely, and
+ * shrinks the number of live, billable, AuthGate-protected endpoints by
+ * three -- relevant given this increment's session-cookie hardening
+ * (REV-002). See docs/handoff.md's INC-8 section for the full reasoning
+ * and the QA-owned test files this requires retiring alongside them.
  *
  * Validation ordering per design.md section 5.2 (fail fast, cheapest
  * first): (1) shape/type check of the 4 inputs -> "invalid_input"; (2)

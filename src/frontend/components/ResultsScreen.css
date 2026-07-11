@@ -69,8 +69,9 @@
 
 .results-screen__card-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-sm);
+  gap: var(--space-xs) var(--space-sm);
 }
 
 .results-screen__rank-badge {

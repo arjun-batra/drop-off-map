@@ -763,3 +763,170 @@ No real `MAP_API_KEY` was available in this environment (the same standing limit
 5. **No new tests were added to `tests/` by dev** (per the pipeline rule — `tests/` is QA's owned artifact). All verification in this increment used temporary, uncommitted scratch scripts (`npx tsx` for pure-Node logic, a temporary `tests/_scratch_*.test.tsx` file for jsdom-dependent React rendering, both deleted after use) — QA should write real committed coverage for: `fetchWithTimeout` (timeout/passthrough/non-abort-error paths), each provider service's new `timeoutMs` option end to end, `evaluateShortlist`'s `deadline`/`onSkippedDueToDeadline` options, `/api/drop-off-search`'s `"timeout"` status and graceful-partial-degradation behavior, `DisclaimerBanner`/`ErrorBoundary` in isolation, and `SearchFlow`'s disclaimer/error-boundary composition (the resilience claim itself).
 6. **No real `MAP_API_KEY` was available in this environment** (same standing limitation as every prior increment, tracked under REV-010) — see the "Empirical latency" section above. QA must validate the actual 5-second soft target against real provider responses before Phase 4 closure.
 7. **`REQUEST_TIMEOUT_MS`/timeout enforcement was added to all four provider services and wired into all five `api/*.ts` handlers**, including the three INC-3/4/5 debug endpoints (`/api/route/direct`, `/api/candidates/evaluate`, `/api/candidates/transit`) — these aren't user-facing but are still real billable calls a QA/dev tester can hit, so leaving them un-timed while hardening only the production endpoint would have been an inconsistency worth flagging; instead all five got the identical one-line `timeoutMs: config.requestTimeoutMs` treatment.
+
+---
+
+# Handoff: INC-8 — Paid-tier hardening, full mobile polish, cross-cutting error handling
+
+Status: implemented, smoke-tested, ready for QA. This is the final planned core increment before Phase 4 closure (INC-9's map view remains optional/conditional per design.md section 10).
+Covers: remainder of NFR-001, NFR-002 (re-confirmed), FR-016/FR-017 (full end-to-end incl. re-auth), NFR-006 edge cases (re-confirmed, no code change needed), NFR-003 closure check (re-confirmed, no code change needed). Closes REV-002 (major), REV-004 (minor), REV-005 (minor), REV-014 (minor), and the residual "noted for awareness" `/api/config/public` message-leak item from the INC-1 audit. Resolves REV-013 by retiring its other side (the debug endpoints) rather than aligning conventions.
+
+This was a large, backlog-clearing pass — the summary below is organized by the orchestrator's 8 numbered items.
+
+## 1. REV-002 — session cookie hardening (major, carried since INC-1)
+
+**Problem**: the session token was a deterministic, non-expiring HMAC of a fixed message. A leaked/copied cookie was valid indefinitely, revocable only by rotating `PAID_TIER_ACCESS_PASSWORD` (invalidating every other user's session too).
+
+**Fix**, exactly per reviewer's recommended remediation:
+- **`src/auth/session.ts`**: `createSessionToken(paidTierAccessPassword, expiresAtEpochSeconds)` now requires an explicit expiry (unix seconds) and returns `${expiresAtEpochSeconds}.${hmac}`, where the HMAC is computed over both the fixed message *and* the expiry value — tampering with the plaintext expiry (e.g. to extend it) invalidates the signature, it doesn't just get ignored. `isValidSessionToken(token, paidTierAccessPassword, now = Date.now())` now checks both the signature and `now < expiresAtEpochSeconds * 1000`. `now` is injectable (unix ms), matching the same clock-injection pattern already used elsewhere in this codebase (`googleRoutingService.ts`'s `now` option, `evaluateShortlist.ts`'s shared `now()` reading), so QA can test "not yet expired" / "just expired" deterministically without real waiting.
+- **`src/auth/authGate.ts`**: `AuthGate.check(req, config, now = Date.now())` gained the same optional, injectable third parameter (backward compatible — every existing 2-arg call site is unaffected).
+- **`src/auth/cookies.ts`**: `SessionCookieOptions` gained a required `maxAgeSeconds: number`; `buildSessionCookieHeader` now emits `Max-Age=<value>` so the browser's own cookie also expires (defense in depth — the server-side check above is the actual security boundary, it does not trust the browser to honor `Max-Age`).
+- **New config key `SESSION_LIFETIME_SECONDS`** (integer, required, no code-level default — same fail-fast pattern as every other numeric key): added to `src/config/schema.ts`'s `AppConfig`, parsed in `src/config/loader.ts` via the existing `parsePositiveNumber(..., integerOnly: true)` helper, documented in `.env.example` (example value `3600` = 1 hour). **Checked design.md section 7 first, per the brief's instruction**: the key was *not* already in the schema — reviewer's REV-002 finding explicitly names `SESSION_LIFETIME_SECONDS` as the suggested name in `docs/review-log.md`, so this uses that exact name. Not added to `PublicConfig` (no frontend consumer needs it; the frontend doesn't display a countdown or expiry warning, since neither design.md nor ux-spec.md call for one — see the re-auth-UX note below).
+- **`api/auth/verify-password.ts`**: computes `expiresAtEpochSeconds = Math.floor(Date.now()/1000) + config.sessionLifetimeSeconds` and passes it to both `createSessionToken` and `buildSessionCookieHeader`'s `maxAgeSeconds`.
+
+**Re-auth behavior** (design.md section 10's own INC-8 scope wording: "session cookie, re-auth behavior"), since the session now genuinely expires mid-use for the first time:
+- **`src/frontend/sessionFlag.ts`**: added `clearClientSessionFlag()`.
+- **`src/frontend/App.tsx`**: passes `onSessionExpired` to `<SearchFlow>` — clears the client-side session flag and flips back to `authenticated: false`, which re-renders the Password Gate.
+- **`src/frontend/components/SearchFlow.tsx`**: if `POST /api/drop-off-search` returns `401 unauthorized`, calls `onSessionExpired()` instead of showing the generic system-failure screen (which would be misleading — the problem is auth, not network/provider).
+- **`src/frontend/components/InputScreen.tsx`** / **`src/frontend/hooks/useLocationField.ts`**: the same `onSessionExpired` is threaded down to all three location fields, since a geocode/reverse-geocode call mid-typing can also legitimately 401 once the session has expired. Distinguished from the existing `provider_error` field state (which is for genuine provider/network failures, not auth).
+
+**No logout button was added.** ux-spec.md does not call for one anywhere (§3's password gate spec has no logout affordance, and no other screen has one either), so per this project's no-inference rule, building new UI not authorized by ux-spec would be undocumented scope creep (the same category of issue as REV-008). Flagging this explicitly for designer/pm rather than guessing: now that sessions genuinely expire, a manual "log out" control is a legitimate feature candidate, but it's a product decision, not an implementation detail — the expiry itself already delivers the "short-lived" property FR-016/017's paid-tier language calls for.
+
+**Verified directly** (see Smoke test section) with real HMAC math and a real HTTP round-trip against the local dev server: fresh token valid, expired token rejected, tampered-expiry token rejected, wrong-password token rejected, malformed (missing-expiry) token rejected, exact-boundary token rejected (strict `<`), and a real `POST /api/auth/verify-password` → wait past `SESSION_LIFETIME_SECONDS` → same cookie now genuinely 401s on a real protected endpoint.
+
+## 2. REV-004 — mobile viewport (minor)
+
+**`index.html`**: removed `maximum-scale=1.0` from the viewport meta tag (was disabling pinch-to-zoom, an accessibility anti-pattern per WCAG 1.4.4). Now `width=device-width, initial-scale=1.0` only, exactly as recommended.
+
+## 3. REV-005 — tsconfig (minor)
+
+**`tsconfig.json`**: added `"tests"` to `include`. Verified this doesn't silently break anything that was previously clean — running `tsc --noEmit` with `tests/` excluded still shows zero errors in `src/`/`api/`; every error introduced by this change is confined to `tests/` files. See the "known limitation" section below for the full, itemized breakdown (this interacts significantly with items 1 and 6, since both introduce breaking signature/behavior changes QA's fixtures need to catch up to — which is exactly what REV-005 is for).
+
+## 4. REV-014 — request cancellation (minor)
+
+**Problem**: BUG-001's fix (the `currentSearchToken` guard) prevented a stale/superseded search's result from being *applied*, but never aborted the underlying `fetch`/backend pipeline — a cancelled search still ran its full ~14-17-call-per-submission pipeline server-side for a result nobody would see.
+
+**Fix**:
+- **`src/frontend/api.ts`**: `searchDropOffPoints(request, signal?)` now accepts an optional `AbortSignal`, passed straight through to `fetch`'s own `signal` option. A caught `AbortError` (`DOMException` named `"AbortError"`) is mapped to a new `errorCode: "aborted"` (distinct from `"network_error"`), though in practice `SearchFlow.tsx`'s pre-existing token check always discards an aborted result's outcome before it can reach the UI (see below), so this is mostly for accurate typing/future-proofing, not user-visible behavior.
+- **`src/frontend/components/SearchFlow.tsx`**: added an `activeAbortController` ref alongside the existing `currentSearchToken` ref. `runSearch` aborts the *previous* controller (if any) before starting a new one; `cancelSearch` aborts the *current* controller in addition to bumping the token. Both the "superseded by a newer search" case and the "user clicked Cancel" case now genuinely abort the in-flight HTTP request, not just ignore its eventual result.
+
+**Verified**: existing BUG-001 regression tests (`tests/frontend/SearchFlow.test.tsx`, mocking `searchDropOffPoints` directly) still pass unmodified (10/10) — the abort wiring is additive at the call-site level and doesn't change the mocked-function contract those tests rely on. Manually traced the control flow: in both the cancel and the superseded-by-newer-search cases, `currentSearchToken`'s mismatch check (already existing, BUG-001) causes `runSearch` to `return` *before* ever inspecting the aborted outcome, so no incorrect "aborted"/error UI is ever shown to the user — the abort is purely a cost-saving network-level effect.
+
+## 5. Full mobile polish pass
+
+Reviewed every screen (InputScreen, LoadingScreen, ResultsScreen, PasswordGate, SearchErrorScreen, DisclaimerBanner) against ux-spec.md section 2's token system and section 2.5's layout/tap-target rules. Found and fixed:
+
+- **`InputScreen.css`/`InputScreen.tsx`**: the CTA ("Find drop-off points") was never actually sticky-positioned at the bottom of the viewport once scrolled past, despite ux-spec.md section 4 explicitly calling for this ("always reachable without scrolling back up"). Added a `.input-screen__cta-bar` wrapper (`position: sticky; bottom: 0`) around the button.
+- **`InputScreen.css`**: found a genuine, concrete bug — `.input-screen__cta` had `cursor: not-allowed` unconditionally, with no override for the enabled state (only `:disabled` had its own background rule). This meant the cursor stayed "not-allowed" even once the CTA became genuinely clickable, misleadingly signaling a disabled button. Fixed: `cursor: pointer` on the base rule, `cursor: not-allowed` moved onto `:disabled` only. Also added explicit `width: 100%` (previously relying on implicit flex-stretch from the parent, which happened to work but wasn't guaranteed once the button moved into its own sticky wrapper div).
+- **`InputScreen.css`**: `.input-screen__suggestion` (autocomplete dropdown items) only reached ~36px height (`space-sm` padding + `type-body-small` line-height), short of ux-spec.md section 2.5's 44×44px minimum tap target for interactive elements. Added `min-height: 44px; display: flex; align-items: center`.
+- **`DisclaimerBanner.css`**: added `min-width: 0` to the text span (the standard flexbox fix so a long sentence can wrap across lines on the narrowest phone viewports instead of a flex child refusing to shrink below its one-line content width) and switched `align-items` from `center` to `flex-start` so the icon stays aligned to the first line once the text wraps to multiple lines.
+- **`ResultsScreen.css`**: `.results-screen__card-header` (rank badge + "BEST OPTION" label) had no `flex-wrap`, risking horizontal overflow on the narrowest viewports when both labels don't fit on one line. Added `flex-wrap: wrap` and switched the gap to a row/column pair (`--space-xs --space-sm`) so wrapped lines have sensible vertical spacing too.
+
+**Not changed** (reviewed, found correct as-is): the `>=600px` container-centering rule (already achieved implicitly by `.app-shell`'s `align-items: center` + `.app-shell__container`'s `max-width: 480px`, no separate media query needed); all other buttons/tap targets already met 44px min-height; the password gate, loading screen, and search-error screen's layout/tokens were already compliant on inspection.
+
+## 6. Cross-cutting error handling
+
+Reviewed every error path across all four remaining endpoints holistically (not per-endpoint), per the brief.
+
+**REV-009 sanitization pattern was inconsistent — fixed for full coverage**: `api/geocode.ts` and `api/drop-off-search.ts` already followed the sanitized pattern (generic message to client, detailed error via `console.error` server-side) from earlier increments. **`api/config/public.ts` and `api/auth/verify-password.ts` did not** — both still forwarded the raw `ConfigError.message` (the full `problems` list, naming every missing/malformed env var) directly to the client on a config-load failure. This was explicitly "noted for awareness, not logged as a standalone finding" at the INC-1 review audit (Pass 5) for `/api/config/public`, and never separately caught for `/api/auth/verify-password`. Fixed both to match the established pattern exactly: log the detailed `ConfigError`/error via `console.error`, return the fixed generic string `"The service is temporarily unavailable."` to the client. Confirmed this doesn't break runbook.md section 6's deploy-verification use of `/api/config/public` — that check only inspects the HTTP status/overall shape, never the error message text.
+
+**REV-013 (HTTP-status convention inconsistency between the real endpoint and the debug endpoints) — resolved by retiring the debug endpoints**, not by aligning their conventions. Reasoning, since the brief left this as dev's call:
+- The three temporary debug endpoints (`/api/route/direct` INC-3, `/api/candidates/evaluate` INC-4, `/api/candidates/transit` INC-5) have been fully superseded by `/api/drop-off-search` (INC-6) for two increments now — every code path they existed to validate is exercised end-to-end by the real endpoint and by each underlying module's own unit tests (`tests/routing/*`, `tests/candidates/*`, `tests/transit/*`, all untouched and unaffected by this removal).
+- Retiring them removes REV-013's inconsistency by eliminating one side of it entirely, rather than reshaping the debug endpoints' response bodies to match the real endpoint's 200-for-business-outcomes convention (which would be equally disruptive to QA's existing tests for arguably less benefit, since those endpoints are going away anyway).
+- It also shrinks the number of live, billable, `AuthGate`-protected endpoints from six to three (`config/public` unauthenticated by design, `auth/verify-password`, `geocode`, `drop-off-search`) — directly relevant to this increment's session-cookie hardening theme (fewer endpoints exposed to a leaked/expired-cookie scenario).
+- **Files removed**: `api/route/direct.ts`, `api/candidates/evaluate.ts`, `api/candidates/transit.ts`. `scripts/viteApiMiddleware.ts`'s route table updated to match. The underlying service modules they called (`src/routing/googleRoutingService.ts`, `googleDistanceMatrixService.ts`, `src/candidates/*`, `src/transit/*`) are all still in active use by `api/drop-off-search.ts` and untouched.
+- **QA impact, flagged explicitly**: `tests/api/route-direct.test.ts`, `tests/api/candidates-evaluate.test.ts`, `tests/api/candidates-transit.test.ts` now fail to even import (`Cannot find module ...`) since the files they test no longer exist. These three test files should be deleted/retired by QA to match — there is no reshaping needed, just removal, since the endpoints they covered are gone, not changed.
+- Locally, hitting a retired route (e.g. `GET /api/route/direct`) through `npm run dev` now falls through to Vite's SPA history-fallback (returns `200` + `index.html`), since the dev middleware's route table no longer matches it — this is expected local-dev-only behavior (confirmed directly, see Smoke test section), not a production behavior. On Vercel, the corresponding serverless function file simply no longer exists, so the route genuinely 404s at the platform level.
+
+**NFR-006 edge cases — re-verified, no code change needed.** Read `src/geo/radiusValidator.ts` directly: the boundary check is `haversineDistanceKm(point, center) <= radiusKm` (inclusive `<=`, matching the INC-2-established, already-QA'd/reviewed boundary behavior), both `GEOGRAPHIC_CENTER`/`GEOGRAPHIC_RADIUS_KM` remain fully config-driven with no hardcoded fallback anywhere, and the passenger-destination exemption (DQ-1) is enforced both client-side (`InputScreen.tsx`'s `applyRadiusCheck={false}`) and server-side (`api/drop-off-search.ts` never calls `RadiusValidator` on `passengerDestination`). Nothing to fix; this closes the "NFR-006 → INC-2/INC-8" traceability entry with a confirmation, not new code.
+
+## 7. NFR-006 closure — see above (folded into item 6's writeup, same verification pass).
+
+## 8. FR-016/FR-017 end-to-end closure
+
+Walked the whole paid-tier flow, verified against real HTTP (see Smoke test section) rather than only unit-level:
+- `free_tier`: every endpoint reachable with zero cookie, as before — unaffected by this increment.
+- `paid_tier`, no session: `GET /api/config/public` still open (unauthenticated by design); every other endpoint (`geocode`, `drop-off-search`, and the frontend rendering) blocked until a valid session exists.
+- Password verify: wrong password → `401 invalid_password`; correct password → `200` + `Set-Cookie` with the new signed-expiry token and a real `Max-Age` matching `SESSION_LIFETIME_SECONDS`.
+- Session cookie: valid immediately after login (passes `AuthGate`, reaches the real provider call — confirmed via a deliberately-invalid dummy key surfacing `502`, not `401`, proving the gate itself passed); genuinely expires server-side once `SESSION_LIFETIME_SECONDS` elapses (confirmed via a real wait-then-retry against the same cookie, now `401`).
+- Re-auth: an expired-session `401` on the search endpoint or a geocode call now routes the user back to the Password Gate (see item 1) instead of a generic failure screen.
+
+## Files created
+
+None (no new modules this increment — all changes are edits to existing files, or removals).
+
+## Files removed
+
+- `api/route/direct.ts`, `api/candidates/evaluate.ts`, `api/candidates/transit.ts` (REV-013 retirement, see item 6)
+
+## Files changed
+
+- `.env.example` — added `SESSION_LIFETIME_SECONDS`.
+- `api/auth/verify-password.ts` — signed-expiry token/cookie wiring, REV-009 sanitization.
+- `api/config/public.ts` — REV-009 sanitization.
+- `api/drop-off-search.ts` — module comment updated to reflect debug-endpoint retirement (no behavioral change).
+- `index.html` — REV-004.
+- `scripts/viteApiMiddleware.ts` — removed retired routes.
+- `src/auth/authGate.ts` — injectable `now` parameter.
+- `src/auth/cookies.ts` — `Max-Age` support.
+- `src/auth/session.ts` — signed-expiry token format (REV-002).
+- `src/config/loader.ts`, `src/config/schema.ts` — `SESSION_LIFETIME_SECONDS`.
+- `src/frontend/App.tsx`, `src/frontend/sessionFlag.ts` — re-auth wiring.
+- `src/frontend/api.ts`, `src/frontend/components/SearchFlow.tsx` — `AbortController` (REV-014), re-auth on search 401.
+- `src/frontend/components/InputScreen.tsx`, `src/frontend/hooks/useLocationField.ts` — re-auth on geocode 401, sticky CTA bar.
+- `src/frontend/components/InputScreen.css`, `DisclaimerBanner.css`, `ResultsScreen.css` — mobile polish (item 5).
+- `tsconfig.json` — REV-005.
+
+## How to run / smoke-test
+
+1. Same as prior increments: `npm install`, fill in `.env.local` (now also needs `SESSION_LIFETIME_SECONDS`, e.g. `3600`), `npm run dev`.
+2. To exercise session expiry quickly: set `SESSION_LIFETIME_SECONDS=10` (or similar), log in via the Password Gate, then wait past that many seconds and try any action — you'll be returned to the Password Gate instead of seeing a generic error.
+3. The three debug endpoints no longer exist; `GET /api/config/public`, `POST /api/auth/verify-password`, `GET /api/geocode`, `POST /api/drop-off-search` are the only four routes.
+
+## Smoke test performed
+
+- `npm run typecheck` — **zero errors in `src/`/`api/`** (independently confirmed by re-running `tsc --noEmit` against a copy of the tsconfig with `tests/` excluded from `include` — 0 errors). All remaining type errors are confined to `tests/` files; see the itemized breakdown below.
+- `npm run lint` — clean, 0 errors, 0 warnings (one new warning surfaced from the `onSessionExpired` dependency in `useLocationField.ts`'s `onUseCurrentLocation` callback; resolved with the same `eslint-disable-next-line react-hooks/exhaustive-deps` + explanatory comment pattern already used elsewhere in that file for the same reason — `options` is a fresh object every render).
+- `npm run build` — clean, same output shape.
+- **Session token math, directly** (`npx tsx`, temporary scratch script, not committed): fresh token valid; expired token (checked via injected clock past its expiry) rejected; tampered-plaintext-expiry token rejected (signature covers the expiry, not just the fixed message); wrong-password token rejected; malformed/no-expiry token (simulating an old-style single-arg call) rejected outright — **critically, this does not silently degrade to "valid forever," it fails closed**; exact-boundary (`now === expiresAt`) token rejected (strict `<`, not `<=`).
+- **Cookie header, directly**: `buildSessionCookieHeader(...)` confirmed to emit `Max-Age=3600` alongside the existing `HttpOnly`/`SameSite=Lax`/`Path=/`.
+- **`AuthGate.check`'s injectable clock, directly**: a token expiring in 10s passes `AuthGate.check` immediately, fails when checked with an injected clock 11s later.
+- **Real HTTP, against the actual local dev server** (`npm run dev`, `curl`), with `APP_MODE=paid_tier`:
+  - `GET /api/config/public` → `200`, unauthenticated, as before.
+  - The three retired routes (`GET /api/route/direct`, `/api/candidates/evaluate`, `/api/candidates/transit`) fall through to the SPA shell locally (confirmed via response body inspection — genuine `index.html`, not a stale cached response), consistent with the dev-middleware's `next()` fallback behavior once a route is removed from its table; on Vercel these paths have no corresponding function and would 404 at the platform level.
+  - `GET /api/geocode` with no cookie → `401`.
+  - `POST /api/auth/verify-password` wrong password → `401 invalid_password`; correct password → `200` + `Set-Cookie` with a real signed-expiry token and `Max-Age` matching the configured `SESSION_LIFETIME_SECONDS`.
+  - Reusing that cookie immediately → `502 provider_error` (passed `AuthGate`, failed only at the dummy `MAP_API_KEY` against the real Google endpoint) — proves the gate is genuinely passed, not coincidentally bypassed.
+  - Reusing the same cookie after waiting past `SESSION_LIFETIME_SECONDS` → `401 unauthorized` — proves the session genuinely, server-side, expires on its own schedule for the first time in this project's history.
+- **Full existing test suite** (`npx vitest run`, unmodified `tests/`): **289/366 passing, 77 failing** — every failure is precisely accounted for below, none are unexplained. Confirmed via a temporary, uncommitted one-line patch to `tests/helpers/testEnv.ts` (adding `SESSION_LIFETIME_SECONDS: "3600"` to `validEnv()`, reverted immediately after) that this single fixture addition alone drops the failure count to **7 failing tests + 3 failing-to-import files** — i.e., the other ~67 "failures" are all the identical root cause cascading through every test that calls `loadConfig()`/`validEnv()`, exactly the REV-006/007 precedent.
+- **Existing SearchFlow/InputScreen/App/LoadingScreen/PasswordGate/ResultsScreen/DisclaimerBanner frontend tests** — all pass at runtime unmodified (`61/61` across those 7 files) despite some pre-existing type-only issues surfaced by REV-005 (see below) — confirms the `AbortController`/re-auth/mobile-CSS changes are runtime-safe against the existing suite.
+
+## Known limitations / things QA needs to do before re-running the suite
+
+This increment intentionally introduces breaking changes to two security/architecture-critical, long-flagged items (REV-002, REV-013) plus a coverage fix (REV-005) that, for the first time, surfaces pre-existing test-code issues that were always there but never checked. All of the below is expected, accounted-for fallout — not a "the increment broke things" situation. Itemized exactly, same level of detail as the REV-006/007 precedent:
+
+### A. One-line fixture fix that resolves the bulk of the failures
+`tests/helpers/testEnv.ts`'s `validEnv()` needs `SESSION_LIFETIME_SECONDS: "3600"` added to its base object (same pattern as every other required key). `tests/config/loader.test.ts`'s `ALL_16_KEYS` array (drives the "missing key fails fast" and "every key individually missing" loops) should become `ALL_17_KEYS` including `"SESSION_LIFETIME_SECONDS"` — this alone will give it the same missing-key/invalid-value/configurability coverage every other key already has, no new test-writing logic needed. Verified directly (temporary, reverted patch) that this single change alone drops the failure count from 77 to 7.
+
+### B. Remaining failures after (A), each independently confirmed and explained
+1. **`tests/config/loader.test.ts` "loads a fully-specified free_tier environment into the exact AppConfig shape"** — exact-shape `toEqual` assertion needs `sessionLifetimeSeconds: 3600` added to the expected object literal (same as INC-7's `responseTimeTargetSeconds` precedent).
+2. **`tests/auth/session.test.ts` "validates a token created with the same password"**, **`tests/auth/authGate.test.ts`'s two session-cookie tests**, and **the "valid session cookie" tests in `tests/api/geocode.test.ts`/`tests/api/drop-off-search.test.ts`** — all call `createSessionToken("some-password")` with one argument. This now produces a malformed token (no expiry embedded) that `isValidSessionToken` correctly rejects — **this is the intended, load-bearing behavior of the REV-002 fix**, not a bug. Every one of these call sites needs a second argument, e.g. `createSessionToken("correct-password", Math.floor(Date.now() / 1000) + 3600)`, or a small shared test helper (e.g. `validSessionToken(password)` defaulting to "1 hour from now") to avoid repeating this at every call site — QA's call which pattern to use.
+3. **`tests/api/config-public.test.ts` "paid_tier with no PAID_TIER_ACCESS_PASSWORD fails fast with 500"** — asserts `body.message` contains the literal string `"PAID_TIER_ACCESS_PASSWORD"`. This is now false **on purpose** (item 6's fix): the response body is the fixed generic string `"The service is temporarily unavailable."`; the detailed message is only in the server-side `console.error` log. Recommend updating this assertion to check for the generic message and the *absence* of `"PAID_TIER_ACCESS_PASSWORD"`/`"is required but was not set"` from the body, mirroring the existing REV-009-style leak-check tests already present in `tests/api/geocode.test.ts`.
+4. **`tests/auth/cookies.test.ts`** — 4 calls to `buildSessionCookieHeader(..., { secure: ... })` are missing the now-required `maxAgeSeconds` field. These are **type errors only** (TS `tsc --noEmit` catches them; vitest's esbuild transpile does not, so they pass at runtime as-is, silently not testing the new `Max-Age` behavior at all). Recommend adding `maxAgeSeconds: 3600` (or similar) to each call, plus a new test asserting `Max-Age=<value>` appears correctly in the output.
+5. **`tests/api/route-direct.test.ts`, `tests/api/candidates-evaluate.test.ts`, `tests/api/candidates-transit.test.ts`** — fail to import at all (`Cannot find module ...`) since the endpoints they test were retired (item 6/REV-013). These three files should be deleted, not repaired — there is no replacement behavior to test, the endpoints are simply gone.
+
+### C. Pre-existing test-code type debt, newly surfaced by REV-005 (item 3) — not caused by this increment's other changes
+Running `tsc --noEmit` with `tests/` now included surfaces a number of **pre-existing** type errors in QA's test files that were always there but never checked (this is precisely REV-005's whole point — flagging it, not silently fixing QA's files):
+- `tests/candidates/candidateGenerator.test.ts` (2 spots): object literals missing `GeoPoint`'s required `label` field.
+- `tests/frontend/App.test.tsx`, `tests/frontend/InputScreen.test.tsx`, `tests/frontend/LoadingScreen.test.tsx`: missing `responseTimeTargetSeconds` in hardcoded `PublicConfig`/`LoadingScreenProps` object literals — this is **carried over from INC-7's own already-documented known limitation** (INC-7's handoff explicitly flagged 2 of these 3 exact-shape breaks; this is the same debt, just now caught by `tsc` instead of only by `vitest run`'s runtime failures QA already knew about).
+- `tests/frontend/SearchFlow.test.tsx` (4 spots), `tests/api/verify-password.test.ts` (1 spot): loosely-typed `Promise` executor / possibly-`undefined` env access — pre-existing, unrelated to any change in this increment.
+- `tests/routing/googleDistanceMatrixService.test.ts`, `tests/routing/googleRoutingService.test.ts`, `tests/routing/polyline.test.ts`, `tests/transit/evaluateShortlist.test.ts`, `tests/transit/googleTransitDirectionsService.test.ts`: multiple `noUncheckedIndexedAccess`-driven "possibly undefined" errors from array-index access without a guard (e.g. `arr[0]` assumed non-undefined). These are real, if low-severity, gaps in test-code type safety — exactly the category REV-005 was filed to catch — and none of them affect whether the tests currently *pass* at runtime (esbuild transpiles without type-checking), only whether `npm run typecheck` is clean.
+
+**None of Bucket C is something dev fixed or should fix** (`tests/` is QA's owned artifact per CLAUDE.md) — flagging comprehensively, file-by-file, so QA can address it in one pass rather than discover it piecemeal. Recommend QA treat Buckets A/B (this increment's direct, necessary fallout) and Bucket C (pre-existing debt REV-005 was designed to reveal) as two separate, clearly-labeled batches of fixture/assertion work.
+
+### D. Other notes
+- **No logout UI was added** — flagged in item 1 above for designer/pm as a legitimate follow-up product question now that sessions genuinely expire, not silently built without ux-spec authorization.
+- **`SESSION_LIFETIME_SECONDS` is not exposed via `GET /api/config/public`** — no current frontend behavior needs it (no expiry countdown/warning is specified anywhere), consistent with only adding fields to `PublicConfig` when there's a documented reader (the same reasoning already established for `responseTimeTargetSeconds` in INC-7). Flag to tech-lead/designer if a "your session will expire soon" UX is wanted later — that would need this value threaded through.
+- **The retired debug endpoints' local-dev SPA-fallback behavior** (200 + `index.html` instead of a clean 404) is a pre-existing property of `scripts/viteApiMiddleware.ts`'s `next()` call for unmatched routes, not something this increment's removal introduced — any route not in the `ROUTES` table has always fallen through to the SPA shell locally. Production (Vercel) behavior is a genuine 404 since the function file doesn't exist. Not a discrepancy worth fixing given this tooling is explicitly dev-only and never shipped (per its own module comment).
+- **REV-003, REV-008, REV-011, REV-015** (already RESOLVED or routed to pm/tech-lead/designer, not dev, per the Findings Register) were not touched this increment — out of scope for dev's ownership.
+- **REV-010** (real-`MAP_API_KEY` empirical verification, all four sub-conditions) remains open and untouched by this increment — still no real key available in this environment; this is a qa/release pre-Phase-4 closure item, not something dev can close from here.

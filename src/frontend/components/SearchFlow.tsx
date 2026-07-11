@@ -11,6 +11,17 @@ import { SearchErrorScreen } from "./SearchErrorScreen";
 
 interface SearchFlowProps {
   config: PublicConfig;
+  /**
+   * REV-002/INC-8 re-auth behavior: called when the search endpoint reports
+   * `401 unauthorized` -- i.e. the paid_tier session cookie has expired or
+   * was rotated out from under the user mid-session. The parent (App.tsx)
+   * responds by dropping back to the Password Gate rather than showing a
+   * generic "something went wrong" failure, since the real cause is
+   * re-authentication, not a network/provider problem. Optional so
+   * `free_tier` (where this can never legitimately happen) doesn't need to
+   * wire anything up.
+   */
+  onSessionExpired?: () => void;
 }
 
 type Stage =
@@ -41,7 +52,7 @@ type Stage =
  * orchestration deadline uses (api/drop-off-search.ts), not a second
  * independently-guessed threshold.
  */
-export function SearchFlow({ config }: SearchFlowProps) {
+export function SearchFlow({ config, onSessionExpired }: SearchFlowProps) {
   const [stage, setStage] = useState<Stage>({ kind: "input" });
   const [lastRequest, setLastRequest] = useState<DropOffSearchRequest | null>(null);
 
@@ -54,19 +65,34 @@ export function SearchFlow({ config }: SearchFlowProps) {
   // the same mechanism (BUG-001).
   const currentSearchToken = useRef(0);
 
+  // REV-014 (INC-8): the in-flight request's AbortController. Aborting it
+  // (on cancel, or when a newer search supersedes it) actually stops the
+  // underlying fetch/backend pipeline, rather than only having its eventual
+  // result ignored by the token check above -- BUG-001's fix alone couldn't
+  // do this, since it only ever gated whether a *resolved* response gets
+  // applied to `stage`.
+  const activeAbortController = useRef<AbortController | null>(null);
+
   async function runSearch(request: DropOffSearchRequest) {
     const token = ++currentSearchToken.current;
+    activeAbortController.current?.abort();
+    const controller = new AbortController();
+    activeAbortController.current = controller;
 
     setLastRequest(request);
     setStage({ kind: "loading", request });
 
-    const outcome = await searchDropOffPoints(request);
+    const outcome = await searchDropOffPoints(request, controller.signal);
 
     if (token !== currentSearchToken.current) {
       return;
     }
 
     if (!outcome.ok || !outcome.response) {
+      if (outcome.errorCode === "unauthorized" && onSessionExpired) {
+        onSessionExpired();
+        return;
+      }
       setStage({ kind: "error", request });
       return;
     }
@@ -76,6 +102,7 @@ export function SearchFlow({ config }: SearchFlowProps) {
 
   function cancelSearch() {
     currentSearchToken.current += 1;
+    activeAbortController.current?.abort();
     setStage({ kind: "input" });
   }
 
@@ -129,6 +156,7 @@ export function SearchFlow({ config }: SearchFlowProps) {
           : undefined
       }
       onSubmit={runSearch}
+      onSessionExpired={onSessionExpired}
     />
   );
 }

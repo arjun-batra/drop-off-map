@@ -55,7 +55,7 @@ export async function fetchPublicConfig(): Promise<PublicConfig> {
   return (await res.json()) as PublicConfig;
 }
 
-export type SearchErrorCode = "unauthorized" | "provider_error" | "network_error";
+export type SearchErrorCode = "unauthorized" | "provider_error" | "network_error" | "aborted";
 
 export interface SearchOutcome {
   ok: boolean;
@@ -72,14 +72,27 @@ export interface SearchOutcome {
  * (invalid_input/out_of_service_area/no_viable_option/ranked/fallback) is
  * always a 200 with a `DropOffSearchResponse` body, per this endpoint's own
  * documented contract.
+ *
+ * REV-014 (INC-8): accepts an optional `signal` so a cancelled/superseded
+ * search actually aborts the in-flight request (via `fetch`'s native
+ * AbortSignal support), rather than merely having its eventual result
+ * ignored (SearchFlow.tsx's pre-existing BUG-001 staleness guard). This is
+ * a real cost saving: an aborted request's backend pipeline stops as soon
+ * as Node observes the client disconnect, instead of running the full
+ * ~14-17-call-per-submission pipeline (design.md section 4.5) to completion
+ * for a result nobody will ever see.
  */
-export async function searchDropOffPoints(request: DropOffSearchRequest): Promise<SearchOutcome> {
+export async function searchDropOffPoints(
+  request: DropOffSearchRequest,
+  signal?: AbortSignal,
+): Promise<SearchOutcome> {
   try {
     const res = await fetch("/api/drop-off-search", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "same-origin",
       body: JSON.stringify(request),
+      signal,
     });
 
     if (res.status === 401) {
@@ -91,7 +104,10 @@ export async function searchDropOffPoints(request: DropOffSearchRequest): Promis
 
     const body = (await res.json()) as DropOffSearchResponse;
     return { ok: true, response: body };
-  } catch {
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      return { ok: false, errorCode: "aborted" };
+    }
     return { ok: false, errorCode: "network_error" };
   }
 }

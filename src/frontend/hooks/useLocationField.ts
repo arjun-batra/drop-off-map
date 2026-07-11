@@ -37,6 +37,14 @@ export interface UseLocationFieldOptions {
    * component tree on every stage transition.
    */
   initialValue?: ResolvedLocation | null;
+  /**
+   * REV-002/INC-8 re-auth behavior: called if a geocode/reverse-geocode
+   * lookup comes back `401 unauthorized` (the paid_tier session expired
+   * mid-session). Distinct from the generic `provider_error` status, which
+   * is reserved for genuine provider/network failures -- an expired session
+   * isn't a "try again" situation, it's a "log in again" one.
+   */
+  onSessionExpired?: () => void;
 }
 
 export interface UseLocationFieldResult {
@@ -103,6 +111,10 @@ export function useLocationField(options: UseLocationFieldOptions): UseLocationF
         if (requestSeq.current !== seq) return;
 
         if (!result.ok) {
+          if (result.errorCode === "unauthorized" && options.onSessionExpired) {
+            options.onSessionExpired();
+            return;
+          }
           setSuggestions([]);
           setStatus("provider_error");
           return;
@@ -145,6 +157,10 @@ export function useLocationField(options: UseLocationFieldOptions): UseLocationF
     navigator.geolocation.getCurrentPosition(
       (position) => {
         reverseGeocode(position.coords.latitude, position.coords.longitude).then((result) => {
+          if (!result.ok && result.errorCode === "unauthorized" && options.onSessionExpired) {
+            options.onSessionExpired();
+            return;
+          }
           if (!result.ok || result.results.length === 0) {
             setStatus("geolocation_unavailable");
             return;
@@ -166,7 +182,12 @@ export function useLocationField(options: UseLocationFieldOptions): UseLocationF
         setStatus("geolocation_unavailable");
       },
     );
-  }, [applyRadiusOutcome]);
+    // `options` is a fresh object every render (constructed inline by
+    // LocationField); only the two fields this callback actually reads are
+    // tracked, matching the same pattern already used by the debounce
+    // effect above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applyRadiusOutcome, options.onSessionExpired]);
 
   const onBlur = useCallback(() => {
     setStatus((current) => {

@@ -3,7 +3,7 @@ import type { PublicConfig } from "../config/schema";
 import { fetchPublicConfig } from "./api";
 import { PasswordGate } from "./components/PasswordGate";
 import { SearchFlow } from "./components/SearchFlow";
-import { hasClientSessionFlag } from "./sessionFlag";
+import { clearClientSessionFlag, hasClientSessionFlag } from "./sessionFlag";
 
 type AppState =
   | { status: "loading" }
@@ -52,7 +52,21 @@ export function App() {
     );
   }
 
-  return <SearchFlow config={state.config} />;
+  return (
+    <SearchFlow
+      config={state.config}
+      onSessionExpired={() => {
+        // REV-002/INC-8: the session cookie genuinely expires now (unlike
+        // the previous non-expiring token), so this is a real, reachable
+        // path, not just defensive code. Drop back to the Password Gate
+        // rather than showing a generic failure screen for what is really
+        // an auth problem -- matches FR-016's "entire app... requires a
+        // correct password" for the re-authenticated state too.
+        clearClientSessionFlag();
+        setState({ status: "ready", config: state.config, authenticated: false });
+      }}
+    />
+  );
 }
 
 interface CenteredMessageProps {

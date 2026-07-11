@@ -35,6 +35,16 @@ export interface AppConfig {
   providerConcurrencyLimit: number;
   minGeocodeQueryLength: number;
   geocodeDebounceMs: number;
+  /**
+   * REV-002 (INC-8): lifetime, in seconds, of the session cookie issued by
+   * POST /api/auth/verify-password. Embedded (signed) into the token itself
+   * by src/auth/session.ts, so the session genuinely expires server-side --
+   * not just via the cookie's own Max-Age, which the browser could ignore.
+   * Required whenever `paidTierAccessPassword` is used, same as every other
+   * numeric tunable in this schema: no hardcoded fallback exists anywhere in
+   * code, per the project's no-hardcoded-tunables rule.
+   */
+  sessionLifetimeSeconds: number;
 }
 
 /**

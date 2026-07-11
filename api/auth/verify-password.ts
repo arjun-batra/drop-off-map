@@ -21,8 +21,15 @@ export default function handler(req: VercelRequest, res: VercelResponse): void {
   try {
     config = loadConfig(process.env);
   } catch (err) {
-    const message = err instanceof ConfigError ? err.message : "Configuration failed to load.";
-    res.status(500).json({ error: "config_error", message });
+    // INC-8 cross-cutting error-handling pass: apply the same REV-009
+    // sanitized pattern every other endpoint uses -- log the detailed
+    // ConfigError server-side only, return a fixed generic message. This
+    // endpoint previously forwarded the raw problem list (env var names)
+    // to the client, inconsistent with every other endpoint's config-error
+    // handling.
+    const message = err instanceof ConfigError ? err.message : String(err);
+    console.error("[api/auth/verify-password] config load failed:", message);
+    res.status(500).json({ error: "config_error", message: "The service is temporarily unavailable." });
     return;
   }
 
@@ -44,9 +51,14 @@ export default function handler(req: VercelRequest, res: VercelResponse): void {
 
   // paidTierAccessPassword is guaranteed non-null here: verifyPassword only
   // returns true when config.paidTierAccessPassword is set.
-  const token = createSessionToken(config.paidTierAccessPassword as string);
+  // REV-002: the token now embeds a signed expiry (SESSION_LIFETIME_SECONDS)
+  // so the session is genuinely short-lived, not just non-expiring-until-
+  // password-rotation. The cookie's own Max-Age mirrors the same value.
+  const expiresAtEpochSeconds = Math.floor(Date.now() / 1000) + config.sessionLifetimeSeconds;
+  const token = createSessionToken(config.paidTierAccessPassword as string, expiresAtEpochSeconds);
   const cookie = buildSessionCookieHeader(SESSION_COOKIE_NAME, token, {
     secure: shouldUseSecureCookie(process.env.VERCEL_ENV),
+    maxAgeSeconds: config.sessionLifetimeSeconds,
   });
   res.setHeader("Set-Cookie", cookie);
   res.status(200).json({ ok: true });
