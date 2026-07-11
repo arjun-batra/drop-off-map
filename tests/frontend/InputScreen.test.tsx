@@ -377,6 +377,91 @@ describe("InputScreen -- FR-001, FR-003, FR-004, FR-015, NFR-006", () => {
     });
   });
 
+  describe("FR-002: max acceptable detour field (design.md section 1.3 -- no upper bound)", () => {
+    function detourInput(): HTMLInputElement {
+      return container.querySelector("#max-detour-input") as HTMLInputElement;
+    }
+
+    it("renders with no `max` attribute at all -- must never impose a hidden sanity ceiling", () => {
+      render();
+      const input = detourInput();
+      expect(input).not.toBeNull();
+      expect(input.hasAttribute("max")).toBe(false);
+    });
+
+    it("shows no error before the field has been touched (blurred), even though it starts empty", () => {
+      render();
+      const wrap = detourInput().closest(".input-screen__field") as HTMLElement;
+      expect(wrap.textContent).not.toContain("Enter a maximum detour time in minutes.");
+    });
+
+    it("shows the empty-field error only after blur", () => {
+      render();
+      const input = detourInput();
+      act(() => {
+        input.focus();
+        input.blur();
+      });
+      const wrap = input.closest(".input-screen__field") as HTMLElement;
+      expect(wrap.textContent).toContain("Enter a maximum detour time in minutes.");
+    });
+
+    it("shows the 'greater than 0' error for a zero/negative value after blur", () => {
+      render();
+      const input = detourInput();
+      act(() => setValue(input, "-5"));
+      act(() => {
+        input.focus();
+        input.blur();
+      });
+      const wrap = input.closest(".input-screen__field") as HTMLElement;
+      expect(wrap.textContent).toContain("Enter a number greater than 0.");
+    });
+
+    it("accepts a very large value (100000) with no error shown, confirming no hidden ceiling at the UI layer either", () => {
+      render();
+      const input = detourInput();
+      act(() => setValue(input, "100000"));
+      act(() => {
+        input.focus();
+        input.blur();
+      });
+      const wrap = input.closest(".input-screen__field") as HTMLElement;
+      expect(wrap.textContent).not.toContain("Enter a number greater than 0.");
+      expect(input.value).toBe("100000");
+    });
+
+    it("a valid positive value clears a previously-shown error once corrected", () => {
+      render();
+      const input = detourInput();
+      act(() => {
+        input.focus();
+        input.blur();
+      });
+      expect((input.closest(".input-screen__field") as HTMLElement).textContent).toContain(
+        "Enter a maximum detour time in minutes.",
+      );
+
+      act(() => setValue(input, "15"));
+      expect((input.closest(".input-screen__field") as HTMLElement).textContent).not.toContain(
+        "Enter a maximum detour time in minutes.",
+      );
+    });
+  });
+
+  describe("INC-3 scope boundary: CTA remains a non-functional placeholder", () => {
+    it("the 'Find drop-off points' button is still disabled regardless of detour field validity (search wiring is INC-4/INC-6 scope)", () => {
+      render();
+      const input = container.querySelector("#max-detour-input") as HTMLInputElement;
+      act(() => setValue(input, "15"));
+
+      const cta = Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent === "Find drop-off points",
+      ) as HTMLButtonElement;
+      expect(cta.disabled).toBe(true);
+    });
+  });
+
   describe("known-limitation follow-up: blur-vs-in-flight-geocode race (handoff.md item 5)", () => {
     it("self-corrects: a blur before the debounced response arrives may transiently show 'unresolvable' but converges to the real result", async () => {
       mockGeocodeFetch({ "456 Bay": [{ lat: NEARBY_RESULT.lat, lng: NEARBY_RESULT.lng, label: NEARBY_RESULT.label }] });
