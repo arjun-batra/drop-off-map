@@ -247,16 +247,22 @@ interface EvaluatedCandidate extends RawCandidate {
 
 // shortlistSelector.ts
 interface ShortlistSelector {
-  select(evaluated: EvaluatedCandidate[], config: AppConfig): EvaluatedCandidate[];
+  select(evaluated: EvaluatedCandidate[], config: ShortlistSelectionConfig): EvaluatedCandidate[];
 }
+// Narrowed per REV-011 -- select() only reads the transit-evaluation cap off
+// config.
+type ShortlistSelectionConfig = Pick<AppConfig, "maxTransitEvaluationsPerRequest">;
 
 // transitEvaluator.ts
 interface TransitEvaluator {
   evaluate(
     candidate: EvaluatedCandidate, passengerDestination: LatLng,
-    departureTime: Date, config: AppConfig
+    departureTime: Date, config: TransitEvaluationConfig
   ): Promise<TransitResult>;
 }
+// Narrowed per REV-011 -- evaluate() only reads the transit-mode filter off
+// config.
+type TransitEvaluationConfig = Pick<AppConfig, "transitModesIncluded">;
 interface TransitResult {
   walkTimeMinutes: number; waitTimeMinutes: number; transitTimeMinutes: number;
   passengerTotalTimeMinutes: number; noTransitAvailable: boolean;
@@ -291,8 +297,12 @@ function evaluateShortlist(
 interface FullyEvaluatedCandidate extends EvaluatedCandidate, TransitResult {}
 
 interface Ranker {
-  rank(fullyEvaluated: FullyEvaluatedCandidate[], maxDetourMinutes: number, config: AppConfig): RankedResult;
+  rank(fullyEvaluated: FullyEvaluatedCandidate[], maxDetourMinutes: number, config: RankingConfig): RankedResult;
 }
+// Narrowed per REV-011 -- rank() only reads the final-candidates cap off
+// config; maxDetourMinutes is separate, per-request user input, not an
+// AppConfig field.
+type RankingConfig = Pick<AppConfig, "maxCandidatesReturned">;
 type RankedResult =
   | { status: "ranked"; results: FullyEvaluatedCandidate[] }
   | { status: "fallback"; results: [FullyEvaluatedCandidate]; warning: string }
@@ -396,6 +406,7 @@ All values below are configurable via environment variables (or equivalent confi
 | `PROVIDER_CONCURRENCY_LIMIT` | integer | 10 | no | Max simultaneous outbound provider calls per user request, to respect provider QPS limits while still parallelizing (section 6) |
 | `MIN_GEOCODE_QUERY_LENGTH` | integer | 3 | no | Minimum characters typed into a location field before an autocomplete geocode lookup fires. Cost-control lever — every character at/above this length triggers a real, billable Google Geocoding API call (see REV-006 decision below). |
 | `GEOCODE_DEBOUNCE_MS` | integer | 300 | no | Debounce delay (ms) after the user stops typing before an autocomplete lookup fires. Shapes billable call *frequency* during typing (see REV-006 decision below). |
+| `SESSION_LIFETIME_SECONDS` | integer | 3600 | no | Lifetime, in seconds, of the session cookie issued by `POST /api/auth/verify-password`; embedded (signed) into the token itself so the session genuinely expires server-side, not just via the cookie's own `Max-Age`. Required whenever `APP_MODE=paid_tier` (FR-016/017, REV-002 remediation). |
 
 `MAX_DETOUR_THRESHOLD_INPUT` is intentionally **not** in this table — confirmed in requirements as user-entered per session, no config default.
 
