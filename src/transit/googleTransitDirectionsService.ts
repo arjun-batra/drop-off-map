@@ -90,9 +90,14 @@ function transitModeParam(config: TransitEvaluationConfig): string | undefined {
  *   ride time is not a meaningful passenger-facing quantity.
  *
  * `sawTransitStep` lets the caller distinguish "a route was returned but it
- * contains zero actual transit legs" (effectively a walking-only route --
- * treated as `noTransitAvailable`, see googleTransitDirectionsService's
- * `evaluate`) from a genuine multi-leg transit itinerary.
+ * contains zero actual transit legs" (a walking-only route -- a genuinely
+ * valid, near-zero-transit-time result, see googleTransitDirectionsService's
+ * `evaluate`) from a genuine multi-leg transit itinerary. Note that when
+ * there are zero TRANSIT steps, `waitTimeMinutes`/`transitTimeMinutes` are
+ * already correctly 0 by construction (nothing accumulates into them) and
+ * `walkTimeMinutes`/`passengerTotalTimeMinutes` already equal the route's
+ * full walking duration -- the formulas below need no special-casing for
+ * this, only the caller's decision of what `noTransitAvailable` to report.
  */
 export function parseTransitRoute(
   route: GoogleTransitRoute,
@@ -207,13 +212,19 @@ export function createGoogleTransitService(options: GoogleTransitServiceOptions)
       const parsed = parseTransitRoute(route, departureSeconds);
       // A route with zero actual TRANSIT steps is a walking-only itinerary --
       // Google can return this for very short trips even when mode=transit
-      // was requested. That's not a transit option, so treat it the same as
-      // "no transit available" rather than reporting a passenger walking the
-      // whole way as a viable drop-off/transit combination.
-      if (!parsed.sawTransitStep) {
-        return { ...NO_TRANSIT_RESULT };
-      }
-
+      // was requested, because the candidate is close enough to the
+      // passenger's destination that no vehicle leg is needed. Per the
+      // user's resolution of the judgment call flagged in docs/handoff.md's
+      // INC-5 section (known limitation #3), this is a genuinely good
+      // outcome -- the family member barely needs to travel -- and is
+      // reported as a normal, valid result (`noTransitAvailable: false`),
+      // not excluded to only the FR-011 fallback path. `sawTransitStep`
+      // being false means `waitTimeMinutes`/`transitTimeMinutes` are already
+      // (correctly) 0 -- no vehicle leg means nothing to wait for and no
+      // in-vehicle time -- and `walkTimeMinutes`/`passengerTotalTimeMinutes`
+      // already equal the route's full walking duration, since the entire
+      // route IS the walk. No extra computation is needed here; only the
+      // `noTransitAvailable` flag differs from a genuine transit itinerary.
       return {
         walkTimeMinutes: parsed.walkTimeMinutes,
         waitTimeMinutes: parsed.waitTimeMinutes,
