@@ -150,6 +150,8 @@ export function loadConfig(env: Env = process.env): AppConfig {
   const distanceMatrixBatchSize = parsePositiveNumber(env, "DISTANCE_MATRIX_BATCH_SIZE", problems, true);
   const requestTimeoutMs = parsePositiveNumber(env, "REQUEST_TIMEOUT_MS", problems, true);
   const providerConcurrencyLimit = parsePositiveNumber(env, "PROVIDER_CONCURRENCY_LIMIT", problems, true);
+  const minGeocodeQueryLength = parsePositiveNumber(env, "MIN_GEOCODE_QUERY_LENGTH", problems, true);
+  const geocodeDebounceMs = parsePositiveNumber(env, "GEOCODE_DEBOUNCE_MS", problems, true);
   const paidTierAccessPassword = parsePaidTierAccessPassword(env, appMode, problems);
 
   if (problems.length > 0) {
@@ -172,5 +174,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
     distanceMatrixBatchSize,
     requestTimeoutMs,
     providerConcurrencyLimit,
+    minGeocodeQueryLength,
+    geocodeDebounceMs,
   };
 }

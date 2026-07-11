@@ -4,9 +4,6 @@ import { ConfigError, loadConfig } from "../src/config/loader";
 import { GeocodingProviderError } from "../src/geocoding/errors";
 import { createGoogleGeocodingService } from "../src/geocoding/googleGeocodingService";
 
-/** ux-spec.md section 4.1: "min 3 characters before querying". */
-const MIN_QUERY_LENGTH = 3;
-
 function firstQueryValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
@@ -32,8 +29,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   try {
     config = loadConfig(process.env);
   } catch (err) {
-    const message = err instanceof ConfigError ? err.message : "Configuration failed to load.";
-    res.status(500).json({ error: "config_error", message });
+    // REV-009: never forward the raw ConfigError message to the client -- it can
+    // reveal internal config-key names/validation rules. Log the detail server-side only.
+    const message = err instanceof ConfigError ? err.message : String(err);
+    console.error("[api/geocode] config load failed:", message);
+    res.status(500).json({ error: "config_error", message: "The service is temporarily unavailable." });
     return;
   }
 
@@ -50,7 +50,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 
   try {
     if (query !== undefined) {
-      if (query.trim().length < MIN_QUERY_LENGTH) {
+      if (query.trim().length < config.minGeocodeQueryLength) {
         res.status(400).json({ error: "query_too_short" });
         return;
       }
@@ -82,7 +82,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 
     res.status(400).json({ error: "missing_query_or_point" });
   } catch (err) {
-    const message = err instanceof GeocodingProviderError ? err.message : "Geocoding provider request failed.";
-    res.status(502).json({ error: "provider_error", message });
+    // REV-009: the underlying provider error message (e.g. Google's own
+    // error_message field) can reveal credential/config validity detail --
+    // e.g. "The provided API key is invalid." Log it server-side only and
+    // return a generic message to the client.
+    const message = err instanceof GeocodingProviderError ? err.message : String(err);
+    console.error("[api/geocode] provider request failed:", message);
+    res.status(502).json({ error: "provider_error", message: "Unable to reach the geocoding provider right now." });
   }
 }

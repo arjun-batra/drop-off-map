@@ -12,5 +12,7 @@ export function toPublicConfig(config: AppConfig): PublicConfig {
     geographicRadiusKm: config.geographicRadiusKm,
     maxCandidatesReturned: config.maxCandidatesReturned,
     transitModesIncluded: config.transitModesIncluded,
+    minGeocodeQueryLength: config.minGeocodeQueryLength,
+    geocodeDebounceMs: config.geocodeDebounceMs,
   };
 }

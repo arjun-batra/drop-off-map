@@ -33,6 +33,8 @@ export interface AppConfig {
   distanceMatrixBatchSize: number;
   requestTimeoutMs: number;
   providerConcurrencyLimit: number;
+  minGeocodeQueryLength: number;
+  geocodeDebounceMs: number;
 }
 
 /**
@@ -46,4 +48,6 @@ export interface PublicConfig {
   geographicRadiusKm: number;
   maxCandidatesReturned: number;
   transitModesIncluded: TransitModesIncluded;
+  minGeocodeQueryLength: number;
+  geocodeDebounceMs: number;
 }

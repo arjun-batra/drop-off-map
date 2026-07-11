@@ -93,6 +93,8 @@ function LocationField({ label, applyRadiusCheck, config }: LocationFieldProps) 
     applyRadiusCheck,
     geographicCenter: config.geographicCenter,
     geographicRadiusKm: config.geographicRadiusKm,
+    minGeocodeQueryLength: config.minGeocodeQueryLength,
+    geocodeDebounceMs: config.geocodeDebounceMs,
   });
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(-1);
   const inputId = useId();

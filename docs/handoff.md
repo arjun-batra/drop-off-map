@@ -153,3 +153,48 @@ Covers: FR-001, FR-003, FR-004, FR-015, NFR-006. Config keys consumed (already l
 5. **Blur-triggered "unresolvable" validation has a possible one-frame race**: if a user blurs the field while a debounced geocode request is still in flight, the blur handler may transiently mark the field "unresolvable" before the in-flight response arrives and corrects the status (to "typing" with suggestions, or a confirmed "unresolvable"). The final state always converges correctly; QA may see a brief flash on a slow network and should confirm it self-corrects rather than sticking.
 6. **Passenger destination's exemption from the radius check is enforced only via the `applyRadiusCheck={false}` prop on the frontend's `LocationField`/`useLocationField`**, and by simply never invoking `RadiusValidator` server-side yet (no `/api/drop-off-search` exists until INC-4+). QA should specifically re-verify this exemption again once INC-4's server-side validation ordering is built, per design.md section 5.2's "(1) shape/type → (2) radius check on start+driverDestination only)" ordering — this increment only covers the input-screen-level check.
 7. As with INC-1, the CTA ("Find drop-off points") and the detour-minutes field are still non-functional placeholders — unchanged from INC-1, intentionally out of INC-2 scope.
+
+---
+
+# Follow-up fix pass on INC-2 (2026-07-11): REV-006, REV-007, REV-009
+
+Status: implemented, smoke-tested (typecheck/lint/build clean). INC-2 remains cleared by QA/reviewer; this is the opportunistic follow-up dev pass design.md section 7.1 called for, not a new increment.
+
+## 1. Config promotion (REV-006/REV-007, per design.md section 7.1)
+
+Promoted the two previously-hardcoded constants into the config schema, exactly per tech-lead's decision:
+
+- **`src/config/schema.ts`**: added `minGeocodeQueryLength: number` / `geocodeDebounceMs: number` to `AppConfig`, and the same two fields to `PublicConfig`.
+- **`src/config/loader.ts`**: added `MIN_GEOCODE_QUERY_LENGTH` / `GEOCODE_DEBOUNCE_MS` parsing via the existing `parsePositiveNumber(..., integerOnly: true)` helper, in the same required-with-no-code-fallback pattern as the other 14 keys (operator must set the env var; ConfigError lists it as a problem if missing, same as `MAX_CANDIDATES_RETURNED` etc.).
+- **`src/config/publicConfig.ts`**: `toPublicConfig()` now includes both fields in the `GET /api/config/public` response shape.
+- **`.env.example`**: added both keys with their design.md-documented defaults (3, 300) as example values, next to `TRANSIT_MODES_INCLUDED`.
+- **`api/geocode.ts`**: removed the local `MIN_QUERY_LENGTH` constant entirely; the query-length check now reads `config.minGeocodeQueryLength` from the already-loaded `AppConfig` (one-line change, no new plumbing, per section 7.1 point 2).
+- **`src/frontend/hooks/useLocationField.ts`**: removed both local constants (`MIN_QUERY_LENGTH`, `DEBOUNCE_MS`) entirely — no fallback/default left behind. `UseLocationFieldOptions` gained `minGeocodeQueryLength`/`geocodeDebounceMs` fields, used in the debounce `useEffect` and the `onBlur` handler.
+- **`src/frontend/components/InputScreen.tsx`**: `LocationField`'s call to `useLocationField` now threads `config.minGeocodeQueryLength` / `config.geocodeDebounceMs` from the already-fetched `PublicConfig` prop — the same pattern already used for `geographicCenter`/`geographicRadiusKm`. No second fetch, no new plumbing.
+
+Backend enforcement of `minGeocodeQueryLength` in `api/geocode.ts` remains the real security/cost boundary independent of the frontend's copy of the value (per section 7.1 point 4) — unchanged in this pass, just re-confirmed.
+
+## 2. Error message leakage fix (REV-009)
+
+In `api/geocode.ts`:
+- Config-load-failure path (500): logs the detailed `ConfigError.message` via `console.error` server-side, returns a fixed generic client message (`"The service is temporarily unavailable."`) instead of the raw validation-error text.
+- Provider-error path (502): logs the detailed `GeocodingProviderError.message` (or any other thrown error, stringified) via `console.error` server-side, returns a fixed generic client message (`"Unable to reach the geocoding provider right now."`) instead of forwarding Google's raw `error_message` (e.g. no more leaking things like "The provided API key is invalid.").
+
+This does not touch coordinate/address logging (design.md section 9's constraint on raw-coordinate logging is unaffected — these are error-detail logs, not location logs).
+
+## Files touched
+
+- `src/config/schema.ts`, `src/config/loader.ts`, `src/config/publicConfig.ts`
+- `api/geocode.ts`
+- `src/frontend/hooks/useLocationField.ts`, `src/frontend/components/InputScreen.tsx`
+- `.env.example`
+
+## How to run / smoke-test
+
+- `npm run typecheck`, `npm run lint`, `npm run build` — all clean.
+- Manually loaded config with `MIN_GEOCODE_QUERY_LENGTH`/`GEOCODE_DEBOUNCE_MS` set/unset via a Node REPL against `loadConfig()` to confirm both the happy path (values come through as numbers on `AppConfig`) and the fail-fast path (`ConfigError` lists both by name when unset), matching the existing 14-key pattern.
+- Re-read `api/geocode.ts`'s two catch blocks to confirm no code path still forwards `err.message` to the client `res.json()` call.
+
+## Known limitation / heads-up for QA
+
+`tests/helpers/testEnv.ts`'s `validEnv()` fixture (and the hardcoded `PublicConfig` object literals in `tests/frontend/InputScreen.test.tsx`/`App.test.tsx`) predate this change and do not yet include `MIN_GEOCODE_QUERY_LENGTH`/`GEOCODE_DEBOUNCE_MS` (env) or `minGeocodeQueryLength`/`geocodeDebounceMs` (`PublicConfig` object literals). Since `tests/` is QA's file, dev did not modify it — but running the existing suite as-is will fail broadly (`loadConfig()` now throws `ConfigError` for every test env missing the two new required keys, and the frontend tests' hardcoded `PublicConfig` mocks produce `NaN` for the two new fields, breaking the debounce/min-length logic). This is the same fixture-update QA would need for any newly-promoted required config key (no different in kind from onboarding the original 14) — not a defect in this fix pass. Confirmed via `tsc --noEmit` passing cleanly that this isn't a type error either; it's purely because `tests/tsconfig` doesn't type-check `tests/` (already tracked separately as REV-005) and JS values pass through as `undefined`/`NaN` at runtime instead. Recommend QA add both keys to `validEnv()` (e.g. `"3"`/`"300"`) and to the two hardcoded `PublicConfig` test fixtures (e.g. `3`/`300`) before re-running the suite.

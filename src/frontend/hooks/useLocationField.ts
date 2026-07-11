@@ -3,10 +3,6 @@ import { geocodeQuery, reverseGeocode } from "../api";
 import type { GeoResult } from "../../geocoding/types";
 import { RadiusValidator } from "../../geo/radiusValidator";
 
-/** ux-spec.md section 4.1: "min 3 characters before querying, standard debounce". */
-const MIN_QUERY_LENGTH = 3;
-const DEBOUNCE_MS = 300;
-
 export type LocationFieldStatus =
   | "empty"
   | "typing"
@@ -28,6 +24,9 @@ export interface UseLocationFieldOptions {
   applyRadiusCheck: boolean;
   geographicCenter: { lat: number; lng: number; label: string };
   geographicRadiusKm: number;
+  /** design.md section 7.1 (REV-006/REV-007): sourced from GET /api/config/public, never a local literal. */
+  minGeocodeQueryLength: number;
+  geocodeDebounceMs: number;
 }
 
 export interface UseLocationFieldResult {
@@ -81,7 +80,7 @@ export function useLocationField(options: UseLocationFieldOptions): UseLocationF
       setIsCurrentLocation(false);
     }
 
-    if (trimmed.length < MIN_QUERY_LENGTH) {
+    if (trimmed.length < options.minGeocodeQueryLength) {
       setSuggestions([]);
       setStatus(trimmed.length === 0 ? "empty" : "typing");
       return;
@@ -102,11 +101,11 @@ export function useLocationField(options: UseLocationFieldOptions): UseLocationF
         setSuggestions(result.results);
         setStatus(result.results.length === 0 ? "unresolvable" : "typing");
       });
-    }, DEBOUNCE_MS);
+    }, options.geocodeDebounceMs);
 
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [typedValue]);
+  }, [typedValue, options.minGeocodeQueryLength, options.geocodeDebounceMs]);
 
   const onTypedValueChange = useCallback((value: string) => {
     setTypedValue(value);
@@ -163,13 +162,13 @@ export function useLocationField(options: UseLocationFieldOptions): UseLocationF
     setStatus((current) => {
       if (current !== "typing") return current;
       const trimmed = typedValue.trim();
-      if (trimmed.length < MIN_QUERY_LENGTH) return trimmed.length === 0 ? "empty" : current;
+      if (trimmed.length < options.minGeocodeQueryLength) return trimmed.length === 0 ? "empty" : current;
       // Suggestions are showing but nothing was selected yet -- leave as-is
       // rather than falsely flagging a match-in-progress as unresolvable.
       if (suggestions.length > 0) return current;
       return "unresolvable";
     });
-  }, [typedValue, suggestions]);
+  }, [typedValue, suggestions, options.minGeocodeQueryLength]);
 
   return {
     typedValue,
