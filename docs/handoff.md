@@ -498,3 +498,35 @@ Ran `createGoogleTransitService(...).evaluate()` and `parseTransitRoute()` direc
 ## Known limitation / heads-up for QA
 
 QA has not yet run its INC-5 pass, so there is no pre-existing `tests/transit/` fixture set to update — this fix simply needs to be reflected in whatever fixtures QA writes for `parseTransitRoute()`/`createGoogleTransitService()`'s walking-only case (expect `noTransitAvailable: false`, not `true`). INC-6's `Ranker`/fallback logic (not yet built) should treat these candidates as ordinary ranking candidates with a very small `passengerTotalTimeMinutes` — no special-case branch is needed there either, since `noTransitAvailable: false` is now the only signal INC-6 needs to include them in normal ranking.
+
+---
+
+# Maintenance: `@vercel/node` dependency bump (2026-07-11) — `npm audit fix --force`
+
+Status: applied, verified, no code changes were needed. User explicitly approved this breaking bump ahead of time.
+
+## What changed
+
+- `package.json` / `package-lock.json`: `@vercel/node` bumped from `^3.2.24` to `^5.8.23` (latest published version) via `npm audit fix --force`, as reported/expected. No other direct dependency in `package.json` changed — the bump only pulls in `@vercel/node`'s own updated transitive dependency tree (`@vercel/build-utils`, etc., all dev-only, used solely for the `VercelRequest`/`VercelResponse` type declarations and local build tooling — never shipped to the browser bundle or the deployed serverless runtime code itself).
+
+## Code/test adjustments needed
+
+None. `@vercel/node@5.8.23`'s exported `VercelRequest`/`VercelResponse` types are unchanged in shape from v3 (`IncomingMessage`/`ServerResponse` extended with the same `query`/`cookies`/`body`/`send`/`json`/`status`/`redirect` members) — confirmed by reading `node_modules/@vercel/node/dist/index.d.ts` directly. All six `api/*.ts` handlers (`api/config/public.ts`, `api/auth/verify-password.ts`, `api/route/direct.ts`, `api/candidates/evaluate.ts`, `api/candidates/transit.ts`, `api/geocode.ts`) and `tests/helpers/mockVercel.ts` import only these two type aliases and needed zero changes. `vercel.json` (framework/buildCommand/outputDirectory only) is unaffected by this bump and was not touched.
+
+## Verification performed (after the bump, before this note)
+
+- `npm run typecheck` — clean, no errors.
+- `npm run lint` — clean, no errors.
+- `npm run build` — clean (`vite build`, same output shape/bundle size as before).
+- `npm test` — all 27 test files / 311 tests pass, no regressions.
+
+## Audit results
+
+- Before: `npm audit` → 9 vulnerabilities (3 moderate, 6 high), all in `@vercel/node@3.2.24`'s transitive dev-only build deps (`tar`, `undici`, `path-to-regexp`).
+- After: `npm audit` → 10 vulnerabilities (4 moderate, 6 high), still entirely inside `@vercel/node@5.8.23`'s own transitive dependency tree (`ajv`, `js-yaml`, `minimatch`, `path-to-regexp`, `smol-toml`, `undici`, all pulled in via `@vercel/build-utils`/`@vercel/python-analysis`/`@vercel/static-config`). `@vercel/node@5.8.23` is the newest version currently published to npm (confirmed via `npm view @vercel/node versions`), so there is no further version bump available to reduce this — it is the ceiling of what `npm audit fix --force` and a manual version check can achieve today. `npm audit fix --force` run a second time reports it would need to *downgrade* to `@vercel/node@4.0.0`, which is not a fix (that version predates 5.8.23) and was not applied.
+- **Production impact: zero, both before and after.** `npm audit --omit=dev` reports **0 vulnerabilities** in both cases — every flagged package here is a dev-only build/type-checking dependency of `@vercel/node`, never a runtime dependency of the deployed app or the browser bundle. This is a net improvement (moved from an unmaintained-in-this-regard v3 line to the actively maintained latest v5 line) even though the raw vulnerability count ticked up by one (a moderate `ajv` ReDoS newly reported upstream in `@vercel/build-utils`'s own tree) — recommend re-running `npm audit` periodically as Vercel publishes patches for `@vercel/build-utils`'s bundled deps, since no action on our side can currently close the remaining 10.
+
+## Files touched
+
+- `package.json`, `package-lock.json` (dependency bump only)
+- No other files changed.
