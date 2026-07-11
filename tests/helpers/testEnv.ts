@@ -1,11 +1,13 @@
 import type { Env } from "../../src/config/loader";
 
 /**
- * A complete, valid environment covering all 14 config keys from
- * design.md section 7 / docs/runbook.md section 4. Individual tests
- * should spread this and override/delete specific keys rather than
- * hand-rolling a partial env, so every test starts from a known-good
- * baseline.
+ * A complete, valid environment covering all 16 config keys from
+ * design.md section 7 / docs/runbook.md section 4 (14 original keys plus
+ * MIN_GEOCODE_QUERY_LENGTH/GEOCODE_DEBOUNCE_MS, promoted per REV-006/REV-007
+ * -- design.md section 7.1, defaults 3/300 matching the schema defaults).
+ * Individual tests should spread this and override/delete specific keys
+ * rather than hand-rolling a partial env, so every test starts from a
+ * known-good baseline.
  */
 export function validEnv(overrides: Partial<Env> = {}): Env {
   const base: Env = {
@@ -24,6 +26,8 @@ export function validEnv(overrides: Partial<Env> = {}): Env {
     DISTANCE_MATRIX_BATCH_SIZE: "25",
     REQUEST_TIMEOUT_MS: "4000",
     PROVIDER_CONCURRENCY_LIMIT: "10",
+    MIN_GEOCODE_QUERY_LENGTH: "3",
+    GEOCODE_DEBOUNCE_MS: "300",
   };
   return { ...base, ...overrides };
 }

@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { ConfigError, loadConfig } from "../../src/config/loader";
 import { validEnv, validPaidTierEnv, withoutKey } from "../helpers/testEnv";
 
-const ALL_14_KEYS = [
+// design.md section 7 / section 7.1 (REV-006/REV-007): 14 original keys plus
+// MIN_GEOCODE_QUERY_LENGTH/GEOCODE_DEBOUNCE_MS, promoted from hardcoded
+// constants during the INC-2 follow-up fix pass.
+const ALL_16_KEYS = [
   "MAP_ROUTING_PROVIDER",
   "MAP_API_KEY",
   "GEOGRAPHIC_CENTER",
@@ -18,6 +21,8 @@ const ALL_14_KEYS = [
   "DISTANCE_MATRIX_BATCH_SIZE",
   "REQUEST_TIMEOUT_MS",
   "PROVIDER_CONCURRENCY_LIMIT",
+  "MIN_GEOCODE_QUERY_LENGTH",
+  "GEOCODE_DEBOUNCE_MS",
 ];
 
 describe("loadConfig -- happy path", () => {
@@ -39,6 +44,8 @@ describe("loadConfig -- happy path", () => {
       distanceMatrixBatchSize: 25,
       requestTimeoutMs: 4000,
       providerConcurrencyLimit: 10,
+      minGeocodeQueryLength: 3,
+      geocodeDebounceMs: 300,
     });
   });
 
@@ -97,6 +104,16 @@ describe("loadConfig -- configurability (catches hardcoded values)", () => {
     expect(config.providerConcurrencyLimit).toBe(2);
     expect(config.responseTimeTargetSeconds).toBe(8);
   });
+
+  it("reflects a changed MIN_GEOCODE_QUERY_LENGTH value rather than a hardcoded 3 (REV-006/REV-007)", () => {
+    const config = loadConfig(validEnv({ MIN_GEOCODE_QUERY_LENGTH: "5" }));
+    expect(config.minGeocodeQueryLength).toBe(5);
+  });
+
+  it("reflects a changed GEOCODE_DEBOUNCE_MS value rather than a hardcoded 300 (REV-006/REV-007)", () => {
+    const config = loadConfig(validEnv({ GEOCODE_DEBOUNCE_MS: "750" }));
+    expect(config.geocodeDebounceMs).toBe(750);
+  });
 });
 
 describe("loadConfig -- fails fast, listing every problem (not just the first)", () => {
@@ -109,7 +126,7 @@ describe("loadConfig -- fails fast, listing every problem (not just the first)",
       expect(err).toBeInstanceOf(ConfigError);
       const problems = (err as ConfigError).problems;
       // At minimum, every required key without a value should surface a problem.
-      for (const key of ALL_14_KEYS) {
+      for (const key of ALL_16_KEYS) {
         if (key === "PAID_TIER_ACCESS_PASSWORD") continue; // only required when APP_MODE=paid_tier
         expect(problems.some((p) => p.includes(key)), `expected a problem mentioning ${key}`).toBe(true);
       }
@@ -129,7 +146,7 @@ describe("loadConfig -- fails fast, listing every problem (not just the first)",
     }
   });
 
-  for (const key of ALL_14_KEYS) {
+  for (const key of ALL_16_KEYS) {
     if (key === "PAID_TIER_ACCESS_PASSWORD") continue; // covered separately below
     it(`fails when only ${key} is missing`, () => {
       expect(() => loadConfig(withoutKey(validEnv(), key))).toThrow(ConfigError);
@@ -176,6 +193,16 @@ describe("loadConfig -- fails fast, listing every problem (not just the first)",
 
   it("rejects a non-integer value for an integer-only key (MAX_CANDIDATES_RETURNED)", () => {
     expect(() => loadConfig(validEnv({ MAX_CANDIDATES_RETURNED: "3.5" }))).toThrow(ConfigError);
+  });
+
+  it("rejects a non-integer or non-positive MIN_GEOCODE_QUERY_LENGTH (REV-006/REV-007)", () => {
+    expect(() => loadConfig(validEnv({ MIN_GEOCODE_QUERY_LENGTH: "2.5" }))).toThrow(ConfigError);
+    expect(() => loadConfig(validEnv({ MIN_GEOCODE_QUERY_LENGTH: "0" }))).toThrow(ConfigError);
+  });
+
+  it("rejects a non-integer or non-positive GEOCODE_DEBOUNCE_MS (REV-006/REV-007)", () => {
+    expect(() => loadConfig(validEnv({ GEOCODE_DEBOUNCE_MS: "150.5" }))).toThrow(ConfigError);
+    expect(() => loadConfig(validEnv({ GEOCODE_DEBOUNCE_MS: "-100" }))).toThrow(ConfigError);
   });
 
   it("rejects malformed JSON for GEOGRAPHIC_CENTER", () => {

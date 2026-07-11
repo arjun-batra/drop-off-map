@@ -187,6 +187,34 @@ describe("GET /api/geocode -- FR-001, FR-003, FR-015, AuthGate wiring", () => {
       expect((jsonBody() as { error: string }).error).toBe("query_too_short");
     });
 
+    it("configurability (REV-006/REV-007): MIN_GEOCODE_QUERY_LENGTH is read from config, not hardcoded to 3", async () => {
+      // Raise the configured minimum to 5: a 4-char query (which the default-3
+      // config would accept) must now be rejected, proving the backend actually
+      // reads config.minGeocodeQueryLength rather than a hardcoded literal.
+      applyEnv(validEnv({ MIN_GEOCODE_QUERY_LENGTH: "5" }));
+      const fetchSpy = vi.fn();
+      vi.stubGlobal("fetch", fetchSpy);
+      const { req, res, statusCode, jsonBody } = createMock({ method: "GET", query: { query: "abcd" } });
+      await handler(req, res);
+
+      expect(statusCode()).toBe(400);
+      expect((jsonBody() as { error: string }).error).toBe("query_too_short");
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it("configurability (REV-006/REV-007): lowering MIN_GEOCODE_QUERY_LENGTH allows a shorter query through to the provider", async () => {
+      applyEnv(validEnv({ MIN_GEOCODE_QUERY_LENGTH: "1" }));
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(googleOk([{ formatted_address: "1 Main St, Toronto, ON", lat: 43.65, lng: -79.38 }])),
+      );
+      // 2 chars -- would be rejected under the default config of 3, must pass under 1.
+      const { req, res, statusCode } = createMock({ method: "GET", query: { query: "ab" } });
+      await handler(req, res);
+
+      expect(statusCode()).toBe(200);
+    });
+
     it("invalid input: provider error status (e.g. REQUEST_DENIED) surfaces as 502 provider_error", async () => {
       applyEnv(validEnv());
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(googleStatus("REQUEST_DENIED", "The provided API key is invalid.")));
@@ -195,6 +223,57 @@ describe("GET /api/geocode -- FR-001, FR-003, FR-015, AuthGate wiring", () => {
 
       expect(statusCode()).toBe(502);
       expect((jsonBody() as { error: string }).error).toBe("provider_error");
+    });
+
+    it("REV-009: a real provider error (invalid API key format) does not leak the raw provider message to the client, but is still logged server-side", async () => {
+      applyEnv(validEnv());
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(googleStatus("REQUEST_DENIED", "The provided API key is invalid.")),
+      );
+      const { req, res, statusCode, jsonBody } = createMock({ method: "GET", query: { query: "123 Main St" } });
+      await handler(req, res);
+
+      expect(statusCode()).toBe(502);
+      const body = jsonBody() as { error: string; message?: string };
+      const serialized = JSON.stringify(body);
+      // The exact response body must not leak provider/credential-validity detail.
+      expect(serialized).not.toContain("The provided API key is invalid");
+      expect(serialized).not.toContain("API key");
+      expect(body.error).toBe("provider_error");
+      expect(body.message).toBe("Unable to reach the geocoding provider right now.");
+
+      // Debuggability regression guard: the detailed error must still be logged
+      // server-side, not silently dropped.
+      expect(consoleErrorSpy).toHaveBeenCalled();
+      const loggedText = consoleErrorSpy.mock.calls.map((call) => call.join(" ")).join("\n");
+      expect(loggedText).toContain("The provided API key is invalid.");
+
+      consoleErrorSpy.mockRestore();
+    });
+
+    it("REV-009: config-load failure does not leak the raw ConfigError validation text to the client, but is still logged server-side", async () => {
+      const env = validEnv();
+      delete env.MAP_API_KEY;
+      applyEnv(env);
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const { req, res, statusCode, jsonBody } = createMock({ method: "GET", query: { query: "123 Main St" } });
+      await handler(req, res);
+
+      expect(statusCode()).toBe(500);
+      const body = jsonBody() as { error: string; message?: string };
+      const serialized = JSON.stringify(body);
+      expect(serialized).not.toContain("MAP_API_KEY");
+      expect(serialized).not.toContain("is required but was not set");
+      expect(body.error).toBe("config_error");
+      expect(body.message).toBe("The service is temporarily unavailable.");
+
+      expect(consoleErrorSpy).toHaveBeenCalled();
+      const loggedText = consoleErrorSpy.mock.calls.map((call) => call.join(" ")).join("\n");
+      expect(loggedText).toContain("MAP_API_KEY");
+
+      consoleErrorSpy.mockRestore();
     });
 
     it("network failure calling the provider surfaces as 502 provider_error, not a crash", async () => {

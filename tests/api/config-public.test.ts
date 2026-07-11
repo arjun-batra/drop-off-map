@@ -28,7 +28,17 @@ describe("GET /api/config/public", () => {
       geographicRadiusKm: 200,
       maxCandidatesReturned: 3,
       transitModesIncluded: "all",
+      minGeocodeQueryLength: 3,
+      geocodeDebounceMs: 300,
     });
+  });
+
+  it("configurability: reflects changed MIN_GEOCODE_QUERY_LENGTH/GEOCODE_DEBOUNCE_MS rather than fixed values (REV-006/REV-007)", () => {
+    applyEnv(validEnv({ MIN_GEOCODE_QUERY_LENGTH: "5", GEOCODE_DEBOUNCE_MS: "750" }));
+    const { req, res, jsonBody } = createMock({ method: "GET" });
+    handler(req, res);
+    expect((jsonBody() as { minGeocodeQueryLength: number }).minGeocodeQueryLength).toBe(5);
+    expect((jsonBody() as { geocodeDebounceMs: number }).geocodeDebounceMs).toBe(750);
   });
 
   it("never leaks MAP_API_KEY or PAID_TIER_ACCESS_PASSWORD in the response body", () => {

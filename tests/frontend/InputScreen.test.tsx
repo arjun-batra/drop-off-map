@@ -15,6 +15,8 @@ const baseConfig: PublicConfig = {
   geographicRadiusKm: 200,
   maxCandidatesReturned: 3,
   transitModesIncluded: "all",
+  minGeocodeQueryLength: 3,
+  geocodeDebounceMs: 300,
 };
 
 // A resolved point far outside Toronto's 200km default radius (Vancouver).
@@ -319,6 +321,58 @@ describe("InputScreen -- FR-001, FR-003, FR-004, FR-015, NFR-006", () => {
       await advance(300);
       await flush();
 
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("configurability (REV-006/REV-007): a lower configured minGeocodeQueryLength queries the geocoder for fewer characters than the default 3", async () => {
+      const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ results: [] }) }));
+      vi.stubGlobal("fetch", fetchSpy);
+      const shorterMinConfig: PublicConfig = { ...baseConfig, minGeocodeQueryLength: 1 };
+      render(shorterMinConfig);
+
+      const input = fieldInput("Your start point");
+      // 2 chars -- would NOT trigger a lookup under the default config of 3
+      // (see the sibling test above), but must under this configured value of 1.
+      act(() => setValue(input, "ab"));
+      await advance(300);
+      await flush();
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("configurability (REV-006/REV-007): a higher configured minGeocodeQueryLength suppresses a lookup that the default 3 would have allowed", async () => {
+      const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ results: [] }) }));
+      vi.stubGlobal("fetch", fetchSpy);
+      const higherMinConfig: PublicConfig = { ...baseConfig, minGeocodeQueryLength: 5 };
+      render(higherMinConfig);
+
+      const input = fieldInput("Your start point");
+      // 4 chars -- would trigger a lookup under the default config of 3, must NOT under 5.
+      act(() => setValue(input, "abcd"));
+      await advance(300);
+      await flush();
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it("configurability (REV-006/REV-007): a longer configured geocodeDebounceMs delays the request beyond the default 300ms", async () => {
+      const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ results: [] }) }));
+      vi.stubGlobal("fetch", fetchSpy);
+      const longerDebounceConfig: PublicConfig = { ...baseConfig, geocodeDebounceMs: 1000 };
+      render(longerDebounceConfig);
+
+      const input = fieldInput("Your start point");
+      act(() => setValue(input, "123 Main St"));
+
+      // Just past the default 300ms -- must NOT have fired yet under the
+      // configured 1000ms debounce.
+      await advance(400);
+      await flush();
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      // Now past the configured 1000ms window -- must have fired.
+      await advance(700);
+      await flush();
       expect(fetchSpy).toHaveBeenCalledTimes(1);
     });
   });

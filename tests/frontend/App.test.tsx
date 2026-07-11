@@ -39,6 +39,8 @@ const freeTierConfig: PublicConfig = {
   geographicRadiusKm: 200,
   maxCandidatesReturned: 3,
   transitModesIncluded: "all",
+  minGeocodeQueryLength: 3,
+  geocodeDebounceMs: 300,
 };
 
 const paidTierConfig: PublicConfig = { ...freeTierConfig, appMode: "paid_tier" };

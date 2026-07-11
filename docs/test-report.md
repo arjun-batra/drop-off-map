@@ -124,9 +124,62 @@ This was treated as the single most important thing to verify in this increment,
 
 ---
 
+## Follow-up re-verification pass on INC-2 (2026-07-11): REV-006, REV-007, REV-009
+
+**Verdict: PASS**
+
+Scope: dev's opportunistic fix pass promoting `MIN_QUERY_LENGTH`/`DEBOUNCE_MS` into config keys `MIN_GEOCODE_QUERY_LENGTH`/`GEOCODE_DEBOUNCE_MS` (REV-006/REV-007, per design.md section 7/7.1) and sanitizing client-facing error messages on `/api/geocode`'s 500/502 paths while preserving server-side logging (REV-009). Does not reopen INC-2's cleared status; this is a diff against already-passed code, re-verified per CLAUDE.md's increment-loop rules.
+
+### 1. Fixture fix (dev-flagged gap, plus additional QA-discovered scope)
+
+Dev flagged that `tests/helpers/testEnv.ts`'s `validEnv()` and the hardcoded `PublicConfig` literals in `tests/frontend/InputScreen.test.tsx`/`App.test.tsx` predate the new config keys. Confirmed this by running the suite before any fix: **7 test files failed, 42/149 tests failing** (not just the 3 files dev named — the gap also cascaded into `tests/config/loader.test.ts`, `tests/config/publicConfig.test.ts`, `tests/api/config-public.test.ts`, and indirectly `tests/api/verify-password.test.ts`, since `loadConfig()` now throws for any env missing the two new required keys and those files' hardcoded exact-shape assertions predate the schema change too). Fixed all of the following, all under `tests/` (QA-owned):
+- `tests/helpers/testEnv.ts` — added `MIN_GEOCODE_QUERY_LENGTH: "3"` / `GEOCODE_DEBOUNCE_MS: "300"` to `validEnv()`.
+- `tests/frontend/InputScreen.test.tsx`, `tests/frontend/App.test.tsx` — added `minGeocodeQueryLength: 3` / `geocodeDebounceMs: 300` to the hardcoded `PublicConfig` literals.
+- `tests/config/loader.test.ts` — renamed `ALL_14_KEYS` → `ALL_16_KEYS` including the two new keys (so the "missing key" fail-fast loop and the "every key missing" problem-list check now cover them automatically); updated the happy-path `toEqual` shape to include `minGeocodeQueryLength`/`geocodeDebounceMs`; added dedicated configurability and invalid-input tests for both new keys (see section 2 below).
+- `tests/config/publicConfig.test.ts` — updated the "exactly N fields" assertion from 5 to 7 fields; added a configurability test.
+- `tests/api/config-public.test.ts` — updated the happy-path `toEqual` shape to include both new fields; added a configurability test.
+
+After these fixes: **full suite 15/15 files, 164/164 tests passed** (see section 4). `npm run typecheck`, `npm run lint`, `npm run build` all clean.
+
+### 2. Independent verification of REV-006/REV-007 (config promotion, single source of truth, configurability)
+
+- **Sourced from config, not hardcoded** — confirmed by reading code, not just handoff.md's claim: `src/config/schema.ts`/`loader.ts`/`publicConfig.ts` define and parse `minGeocodeQueryLength`/`geocodeDebounceMs` with no code-level fallback (same required-env-var pattern as the other 14 keys); `api/geocode.ts` reads `config.minGeocodeQueryLength` directly off the already-loaded `AppConfig`; `useLocationField.ts` takes both as required `UseLocationFieldOptions` fields with no default; `InputScreen.tsx` threads `config.minGeocodeQueryLength`/`config.geocodeDebounceMs` from the fetched `PublicConfig` into every `LocationField`.
+- **Exactly one source of truth, no duplicate constants** — grepped `src/`, `api/`, `scripts/` for `MIN_QUERY_LENGTH`, `DEBOUNCE_MS = <number>`, and similar numeric-literal patterns: zero matches anywhere in production code. The backend `AppConfig` (loaded once via `loadConfig()`) is the sole source; the frontend has no local copy/fallback.
+- **Configurability proven, not just threaded through unused** — added and ran tests confirming a *changed* value changes real behavior at every layer:
+  - Backend: lowering `MIN_GEOCODE_QUERY_LENGTH` to 1 lets a 2-character query reach the provider that the default-3 config would reject; raising it to 5 rejects a 4-character query the default-3 config would accept (`tests/api/geocode.test.ts`).
+  - Config loader/public endpoint: changed `MIN_GEOCODE_QUERY_LENGTH`/`GEOCODE_DEBOUNCE_MS` values are reflected in `AppConfig` and in `GET /api/config/public`'s response body (`tests/config/loader.test.ts`, `tests/config/publicConfig.test.ts`, `tests/api/config-public.test.ts`).
+  - Frontend: a `minGeocodeQueryLength: 1` config triggers a lookup at 2 characters (which the default-3 config does not); a `minGeocodeQueryLength: 5` config suppresses a lookup at 4 characters (which the default-3 config allows); a `geocodeDebounceMs: 1000` config delays the request past the point where the default-300ms config would already have fired (`tests/frontend/InputScreen.test.tsx`).
+  - Invalid-input coverage added for both new keys (non-integer, zero/negative rejected by the loader) matching the existing pattern for other integer config keys.
+- **Conclusion: REV-006 and REV-007 are genuinely resolved.** Config-driven, single-sourced, and independently proven to change behavior when changed — not merely relocated literals.
+
+### 3. Independent verification of REV-009 (error message sanitization)
+
+- **Code review**: confirmed both catch blocks in `api/geocode.ts` (config-load failure → 500, provider-error → 502) log the detailed underlying message via `console.error` server-side and return a fixed generic message to the client (`"The service is temporarily unavailable."` / `"Unable to reach the geocoding provider right now."`), with no code path forwarding `err.message` into the client JSON response.
+- **Unit tests added** (`tests/api/geocode.test.ts`) asserting the exact response body does not contain the raw provider text (`"The provided API key is invalid"`, `"API key"`) or raw config validation text (`"MAP_API_KEY"`, `"is required but was not set"`), that it does contain the expected generic message, and — critically, to guard against a debuggability regression — that `console.error` was actually called with the detailed message (not silently dropped).
+- **Real end-to-end reproduction, not just mocked**: started the local dev server (`npm run dev`) with a genuinely invalid `MAP_API_KEY` and made a real outbound HTTPS call to Google's live Geocoding API. Confirmed:
+  - `GET /api/geocode?query=123%20Main%20St` → `HTTP/1.1 502`, body exactly `{"error":"provider_error","message":"Unable to reach the geocoding provider right now."}` — Google's real response (`"The provided API key is invalid. "`) does **not** appear anywhere in the client-visible body.
+  - Server stderr log contained `[api/geocode] provider request failed: The provided API key is invalid.` — confirms the detail is still captured server-side, not lost.
+  - With `MAP_API_KEY` unset entirely: `HTTP/1.1 500`, body exactly `{"error":"config_error","message":"The service is temporarily unavailable."}`, with the server log containing `[api/geocode] config load failed: Invalid configuration:\n- MAP_API_KEY is required but was not set.`.
+  - `.env.local` used for this test was a temporary scratch file, removed after the check; never committed.
+- **Conclusion: REV-009 is genuinely resolved.** Both the 500 and 502 client-facing paths are sanitized; server-side logging is preserved (no debuggability regression); verified against a real provider response, not only a mock.
+
+### 4. Full regression suite
+
+- `npm run typecheck` (`tsc --noEmit`) — clean, 0 errors.
+- `npm run lint` (`eslint .`) — clean, 0 errors, 0 warnings.
+- `npm run build` (`vite build`) — clean.
+- `npm test` (`vitest run`) — **164 passed / 0 failed**, across all 15 test files (149 pre-existing + 15 new: 2 REV-009 leak/logging tests, 2 backend REV-006/007 configurability tests, 3 frontend REV-006/007 configurability tests, 4 config-loader/public-config configurability/invalid-input tests for the two new keys). Zero regressions — every pre-existing INC-1/INC-2 test still passes.
+
+### Bugs filed
+
+**None.** REV-006, REV-007, and REV-009 are all independently confirmed resolved against the underlying findings (not just against dev's self-report), with new automated coverage added for configurability (the specific thing REV-006/007 were about) and for the exact client-facing response body plus preserved server-side logging (the specific thing REV-009 was about). Recommend the orchestrator route this back to reviewer to formally close REV-006/REV-007/REV-009 in `docs/review-log.md`'s Findings Register.
+
+---
+
 ## Changelog
 
 | Date | Change |
 |---|---|
 | 2026-07-11 | Initial test report for INC-1: PASS, 99/99 tests across 11 files, 0 bugs filed, explicit verdicts recorded on the two dev-flagged items (unauthenticated public-config endpoint, client-side-only gate). |
 | 2026-07-11 | INC-2 test report: PASS, 149/149 tests across 15 files (50 new, 0 regressions), 0 bugs filed. Independently verified (unit + real-HTTP) that `/api/geocode` is genuinely gated by `AuthGate.check()` before any provider call, in both `free_tier` and `paid_tier`. Verified the FR-004/DQ-1 radius-exemption scope precisely (start + driver destination blocked, passenger destination exempt, same address in all three fields). Verified NFR-006 configurability of both radius and center at the validator and UI layers. Assessed all 7 of dev's flagged known limitations; judged none as bugs, with reasoning recorded for reviewer to independently re-check (esp. item 3, the hardcoded-tunables judgment call). |
+| 2026-07-11 | Follow-up re-verification pass on INC-2 (REV-006/REV-007/REV-009): PASS, 164/164 tests across 15 files (15 new, 0 regressions), 0 bugs filed. Fixed the fixture gap dev flagged (`tests/helpers/testEnv.ts`, `InputScreen.test.tsx`/`App.test.tsx`) plus a broader cascade QA discovered independently (`loader.test.ts`, `publicConfig.test.ts`, `config-public.test.ts`). Independently confirmed REV-006/REV-007 resolved: config-sourced, single source of truth (no duplicate literals anywhere in `src`/`api`/`scripts`), and configurability proven end-to-end (backend, config loader/public endpoint, and frontend all change behavior when the config value changes). Independently confirmed REV-009 resolved: unit tests plus a real end-to-end reproduction (live dev server, real Google API call with an invalid key) show the exact client response body never leaks provider/config detail, while server-side `console.error` logging is preserved (no debuggability regression). Recommend orchestrator route to reviewer to formally close REV-006/REV-007/REV-009. |
