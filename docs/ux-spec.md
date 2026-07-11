@@ -1,8 +1,21 @@
-# UX Spec: Drop-off Point Optimizer
+# UX Spec: DropSpot
 
-Status: DRAFT — for Gate 3 review alongside `docs/design.md`.
+Status: FINAL (pending map-view cost confirmation, §6.7) — ready for Gate 3 review alongside `docs/design.md`.
 Source: `docs/idea-brief.md`, `docs/requirements.md` (both approved).
 Owner: designer. Do not edit outside this agent.
+
+## 0.0 Product Name
+
+The user asked for a creative, catchy product name to replace the "Drop-off Point Finder" placeholder. Shortlist considered:
+
+| Name | Rationale |
+|---|---|
+| **DropSpot** (selected) | Short, friendly, plain-language pairing of "drop [off]" + "spot" (the point along the route). Reads naturally in UI copy ("Find your DropSpot"). Easy to say, easy to brand, no jargon. |
+| CurbWise | Clever wordplay (curb + wise/smart) but "curb" skews toward curbside pickup/rideshare branding and is less immediately self-explanatory. |
+| MidPoint Transit | Descriptive but generic/dry, sounds like a transit agency rather than a lightweight consumer tool. |
+| Handoff | Evocative of the driver-to-transit handoff concept, but ambiguous outside context (reads as a general "handoff" tool, not location-specific). |
+
+**DropSpot** is used throughout this spec in place of the placeholder. Final naming/branding sign-off (logo, domain, trademark check) is outside this spec's scope and should be confirmed with the user before deploy.
 
 ## 0. Design Principles
 
@@ -107,7 +120,7 @@ Shown only when `APP_MODE = paid_tier`. Fully replaces the app; nothing behind i
 │                                     │
 │              🔒                     │
 │                                     │
-│      Drop-off Point Finder         │
+│             DropSpot                │
 │                                     │
 │  This app requires a password       │
 │  to continue.                       │
@@ -140,7 +153,7 @@ Shown only when `APP_MODE = paid_tier`. Fully replaces the app; nothing behind i
 
 **Persistence note (flag for tech-lead/dev):** once the correct password is accepted, the user should not be re-prompted on every subsequent action within the same browser session (e.g., navigating back from Results to Input). This can be a client-side session flag only (e.g., `sessionStorage`) — it does not conflict with the app's stateless/no-accounts requirement (NFR-002/NFR-003) since nothing is persisted server-side or across browser sessions. Exact mechanism is a dev/tech-lead implementation choice.
 
-No lockout/throttling is specified here (NFR-007 exempts abuse protection from v1 scope generally); see Open Questions.
+**Resolved:** no lockout/throttling is required for the password gate. A wrong attempt simply shows the inline error above and lets the user try again immediately, with no attempt counter, delay, or lockout logic of any kind.
 
 ---
 
@@ -150,7 +163,7 @@ Single form, four fields, in this order. All fields required before "Find drop-o
 
 ```
 ┌───────────────────────────────────┐
-│  Drop-off Point Finder             │  type-h1
+│  DropSpot                          │  type-h1
 │  Find the best spot along your      │  type-body-small, color-text-secondary
 │  route to drop someone off for      │
 │  transit.                           │
@@ -216,7 +229,7 @@ Validation timing: address resolution and radius checks run as soon as a suggest
 - Required. Client-side validation:
   - Empty on submit attempt → inline error, `color-danger-text`: "Enter a maximum detour time in minutes."
   - Non-numeric or ≤ 0 → inline error: "Enter a number greater than 0."
-  - No upper bound is enforced (none specified in requirements) — see Open Questions §7.1 on whether a sanity-check ceiling is wanted.
+  - **Resolved:** no upper bound/sanity-check ceiling is enforced. Any positive number is accepted as entered — a plain numeric input with no cap.
 
 ### 4.3 Primary CTA — "Find drop-off points"
 
@@ -319,7 +332,7 @@ Ordered top to bottom by rank (ascending passenger total time per FR-010). Each 
 
 - Rank badge: "#1", "#2", "#3" — `type-label` in a `radius-full` pill.
 - Card #1 only: additional "BEST OPTION" label next to the rank badge, and `color-bg-surface-raised` background + `color-brand-primary` left border accent, to visually distinguish the top recommendation. (This is a presentation emphasis on already-ranked data — not new logic. Ranking/order itself comes entirely from FR-010; the visual highlight is UX-only.)
-- Location header: best available resolved description of the drop-off point (e.g., nearest cross-street or reverse-geocoded address) — `type-h2`. Exact data available for this label depends on the routing/geocoding provider tech-lead selects; see Open Questions §7.2.
+- Location header: best available resolved description of the drop-off point (e.g., nearest cross-street or reverse-geocoded address) — `type-h2`. Assumed feasible with Google Maps Platform's reverse geocoding (tech-lead's selected provider); tech-lead to flag if any candidate points can't be labeled this way, in which case this falls back to a distance-along-route phrasing (e.g., "~2.1 km into your route").
 - Two labeled sub-sections, "DRIVER" and "PASSENGER" (`type-label`, `color-text-secondary`), each a simple two-column row list (label left, value right, `type-body` for labels / `type-body-strong` for the values):
   - Driver: Drive to drop-off (FR-006a), Added detour (FR-006b, prefixed with "+"), Your total trip (FR-006f).
   - Passenger: Walk to stop (FR-006c), Wait + transit (FR-006d), Total to destination (FR-006e).
@@ -364,6 +377,23 @@ If the system cannot produce even one candidate (e.g., no transit reachable from
 
 Note this is distinct from the out-of-radius case (Screen 1, §4.1), which blocks earlier at input time and never reaches computation.
 
+### 6.7 Optional enhancement — Map view (pending cost confirmation)
+
+**Status:** approved by the user as an enhancement *conditional on* it not increasing provider API cost (map tile/display billing is typically separate from the Directions/Distance Matrix/Transit calls already in scope for computing results). Tech-lead is confirming this with the chosen provider (Google Maps Platform). This is **not required for MVP core flow** — the card-based layout in §6.1–§6.6 is fully self-sufficient without a map and should be built first regardless of the outcome of that cost check.
+
+**If included, how it fits into the Results screen:**
+
+- A single map panel sits between the trip summary (§6.3) and the candidate cards (§6.4), full-width, roughly 200-240px tall on mobile (`space-lg` margin above/below).
+- Content: the driver's route (start → driver's destination) as a line, plus one pin per candidate, labeled with its rank badge ("#1", "#2", "#3") so the map and the cards below use the same visual vocabulary. The rank-1 pin uses `color-brand-primary`; ranks 2-3 use a neutral marker color (`color-text-secondary` equivalent for map markers) so the top pick still reads as the emphasized one, consistent with the card highlight in §6.4.
+- Tapping a pin scrolls/highlights the corresponding card below (brief `color-bg-surface-raised`-style flash on the card); tapping a card does not need to re-center the map (keeps interaction one-directional and simple).
+- In the fallback state (§6.5, single card), the map shows only that one pin, using the same warning-colored marker (`color-warning-border` equivalent) as the card's "CLOSEST OPTION" badge.
+- In the no-viable-option state (§6.6) and any error state (§7), the map panel is omitted entirely rather than shown empty — there's nothing meaningful to plot.
+- The map is display-only for v1 (no pan/zoom-driven re-querying, no draggable pins, no "recenter" controls beyond whatever the map SDK provides by default) — keeps it a presentation layer over already-computed results, not a new input surface.
+- Loading state (§5) is unaffected — the map only ever appears on the Results screen once candidates exist.
+- Accessibility: the map is supplementary to the text-based cards, not a replacement — a screen-reader user or a user on a slow connection where the map fails to load must still get the complete, correct picture from the cards alone. If the map tile/script fails to load, fail silently and simply omit the panel (do not show a broken-map placeholder or block the cards from rendering).
+
+**If tech-lead determines this does increase cost** materially, this section is deferred/dropped with no impact on any other part of this spec — no other screen or flow depends on the map being present.
+
 ---
 
 ## 7. System/Network Failure State (not tied to a single screen)
@@ -405,11 +435,18 @@ Applies whenever the backend request itself fails (timeout, provider outage, une
 
 ---
 
-## 9. Open UX Questions (need tech-lead and/or user input before or during Gate 3)
+## 9. Open UX Questions
 
-1. **Candidate location label (§6.4):** the spec assumes each result can be labeled with a human-readable address or nearest cross-street. This depends on what the chosen routing/geocoding provider returns for an arbitrary point along a route. Tech-lead: please confirm feasibility, or this label design needs revisiting (e.g., fall back to lat/long or distance-along-route phrasing).
-2. **Map/visual route view:** this spec is text/card-only (no FR requires a visual map). A map thumbnail showing the route and the three candidate pins would likely improve trust/usability but adds provider/rendering scope not currently in the FRs. Flagging as a possible enhancement for the user/tech-lead to explicitly accept or defer, not assuming it in.
-3. **"Taking longer than expected" threshold (§5):** the exact wait time before the loading screen's copy changes, and the point at which a slow request is treated as a hard failure (§7), should match whatever request timeout tech-lead configures server-side. Needs a config value name/handoff from design.md.
-4. **Detour-input sanity ceiling (§4.2):** requirements set no upper bound on the minutes value. Should the UI cap or warn on clearly unreasonable entries (e.g., 10,000 minutes), or is unbounded acceptable for v1? No FR speaks to this either way.
-5. **Password gate throttling (§3):** no lockout/rate-limit is specified for repeated wrong-password attempts (NFR-007 defers abuse protection generally, but that NFR is written about free-tier usage, not explicitly the password gate itself). Confirm with user/pm whether basic throttling is wanted for the gate specifically, or whether it's accepted as out of scope like the rest of abuse protection.
-6. **Product naming/branding:** "Drop-off Point Finder" is a placeholder title used throughout this spec. No product name was specified in idea-brief/requirements — confirm actual name/branding with the user, or accept the placeholder for v1.
+All prior open questions have been resolved by the user (see below). One item remains open pending a tech-lead confirmation already in progress; it does not block Gate 3 sign-off on the rest of this spec.
+
+**Remaining:**
+
+1. **"Taking longer than expected" threshold (§5):** the exact wait time before the loading screen's copy changes, and the point at which a slow request is treated as a hard failure (§7), should match whatever request timeout tech-lead configures server-side. Needs a config value name/handoff from `docs/design.md`. This is an implementation-detail coordination item, not a UX decision, and does not block Gate 3.
+
+**Resolved (for record):**
+
+1. ~~Candidate location label feasibility~~ — assumed to work via Google Maps Platform reverse geocoding per tech-lead; fallback phrasing specified in §6.4 if tech-lead flags otherwise.
+2. ~~Map/visual route view~~ — approved as a conditional enhancement (pending no added provider cost); full spec in §6.7.
+3. ~~Detour-input sanity ceiling~~ — resolved: no upper bound, plain numeric input (§4.2).
+4. ~~Password gate throttling~~ — resolved: no lockout/rate-limiting, simple inline error only (§3).
+5. ~~Product naming/branding~~ — resolved: "DropSpot" selected and applied throughout this spec (§0.0).
