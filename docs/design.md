@@ -203,8 +203,12 @@ interface GeoResult { lat: number; lng: number; label: string; placeId?: string 
 
 // radiusValidator.ts
 interface RadiusValidator {
-  isWithinServiceArea(point: LatLng, config: AppConfig): boolean;
+  isWithinServiceArea(point: LatLng, config: RadiusServiceAreaConfig): boolean;
 }
+// Deliberately narrowed to only the fields this function reads (REV-011) --
+// any full AppConfig structurally satisfies this type, so no caller-side
+// adapter is needed.
+type RadiusServiceAreaConfig = Pick<AppConfig, "geographicCenter" | "geographicRadiusKm">;
 
 // routingService.ts
 interface RoutingService {
@@ -213,17 +217,27 @@ interface RoutingService {
 
 // candidateGenerator.ts
 interface CandidateGenerator {
-  sampleAlongPolyline(polyline: LatLng[], config: AppConfig): RawCandidate[];
+  sampleAlongPolyline(polyline: LatLng[], config: CandidateSamplingConfig): RawCandidate[];
 }
+// Narrowed per REV-011 -- only the fields Phase 1's sampling/radius-drop
+// logic (section 4.2) actually reads.
+type CandidateSamplingConfig = Pick<
+  AppConfig,
+  "candidateSpacingMeters" | "maxRawCandidatesSampled" | "geographicCenter" | "geographicRadiusKm"
+>;
 interface RawCandidate { point: LatLng; routeOrderIndex: number }
 
 // detourEvaluator.ts
 interface DetourEvaluator {
   batchEvaluate(
     start: LatLng, dest: LatLng, directDriveTimeMinutes: number,
-    candidates: RawCandidate[], maxDetourMinutes: number, config: AppConfig
+    candidates: RawCandidate[], maxDetourMinutes: number, config: DetourEvaluationConfig
   ): Promise<EvaluatedCandidate[]>;
 }
+// Narrowed per REV-011 -- batchEvaluate only reads the batch-size tunable
+// off config; maxDetourMinutes is separate, per-request user input (see the
+// 2026-07-11 changelog entry on this parameter), not an AppConfig field.
+type DetourEvaluationConfig = Pick<AppConfig, "distanceMatrixBatchSize">;
 interface EvaluatedCandidate extends RawCandidate {
   driveTimeToCandidateMinutes: number;
   driveTimeFromCandidateMinutes: number;
@@ -248,7 +262,34 @@ interface TransitResult {
   passengerTotalTimeMinutes: number; noTransitAvailable: boolean;
 }
 
+// evaluateShortlist.ts
+// Orchestrates section 4.4 steps 10-13 across the bounded shortlist
+// ShortlistSelector.select produces. Not a single-candidate call like
+// TransitEvaluator.evaluate above -- transit Directions calls cannot be
+// batched into one request the way Distance Matrix calls can (each
+// candidate needs a different departure_time), so this function fans
+// TransitEvaluator.evaluate out across the shortlist in parallel, bounded
+// by PROVIDER_CONCURRENCY_LIMIT (section 4.4 step 10). For each candidate,
+// computes departureTime = requestNow + driveTimeToCandidateMinutes from a
+// single shared now() reading (so every candidate's departure time is
+// anchored to the same instant). A candidate with no viable driving route
+// (driveTimeToCandidateMinutes === Infinity, from DetourEvaluator's
+// per-element-failure handling) is skipped without spending a provider
+// call and reported directly as noTransitAvailable: true.
+function evaluateShortlist(
+  transitEvaluator: TransitEvaluator,
+  shortlist: EvaluatedCandidate[],
+  passengerDestination: LatLng,
+  config: Pick<AppConfig, "transitModesIncluded" | "providerConcurrencyLimit">,
+): Promise<FullyEvaluatedCandidate[]>;
+
 // ranker.ts
+// FullyEvaluatedCandidate is the natural merge of Phase 2's
+// EvaluatedCandidate and Phase 3's TransitResult -- exactly what section
+// 4.4 steps 10-13 (evaluateShortlist, above) produce per shortlisted
+// candidate, and what Ranker.rank below consumes.
+interface FullyEvaluatedCandidate extends EvaluatedCandidate, TransitResult {}
+
 interface Ranker {
   rank(fullyEvaluated: FullyEvaluatedCandidate[], maxDetourMinutes: number, config: AppConfig): RankedResult;
 }
@@ -259,7 +300,9 @@ type RankedResult =
 
 // authMiddleware.ts
 interface AuthGate {
-  check(req: Request, config: AppConfig): boolean; // true = allowed through
+  // Narrowed per REV-011 -- check() only reads appMode/paidTierAccessPassword;
+  // any full AppConfig still satisfies this type, no caller-side adapter needed.
+  check(req: Request, config: Pick<AppConfig, "appMode" | "paidTierAccessPassword">): boolean; // true = allowed through
 }
 ```
 
@@ -478,3 +521,4 @@ No FR/NFR is without design coverage. All previously open questions (DQ-1, DQ-2,
 | 2026-07-11 | Resolved DQ-1 (FR-004 radius check applies only to `start`+`driverDestination`, not `passengerDestination` — updated sections 4.1, 5.2, INC-2, traceability); resolved DQ-2 (Google Maps Platform + free-tier estimate confirmed, no changes needed); resolved DQ-3 (5s soft target + graceful timeout confirmed, no changes needed); recorded new user decisions: no upper bound on `maxDetourMinutes` (INC-3), added section 3.1 confirming (a) Leaflet+non-Google-tiles satisfies the "map view must not increase provider cost" condition and (b) Google's Geocoding API can reverse-geocode arbitrary candidate points for card labels (with nearest-match/coarse-label caveats), added `label` field to `DropOffSearchResponse`, added conditional/optional INC-9 (visual map view) to the increment plan; DQ-4 remains open only as a release/runbook dependency, not a design gap | User resolved all open questions from initial draft; incorporating into finalized design for Gate 3 |
 | 2026-07-11 | Resolved reviewer findings REV-006 (`[HARDCODED]`)/REV-007 (`[BLOAT]`) from the INC-2 audit: promoted the two literal constants `MIN_QUERY_LENGTH`/`DEBOUNCE_MS` (dev's INC-2 implementation) into the config schema as `MIN_GEOCODE_QUERY_LENGTH` (default 3) and `GEOCODE_DEBOUNCE_MS` (default 300ms) — see new section 7.1 for full rationale. Both exposed via `GET /api/config/public` (section 5.2 updated); `AppConfig` interface updated (section 5.1); added a cost-accounting footnote to section 3 clarifying autocomplete-triggered geocode volume is bounded by these two keys, separate from the per-submission call estimate; updated INC-2's "Covers" line (section 10) to include this as an opportunistic follow-up fix to the already-QA'd/reviewer-cleared increment, not a new increment. Directed dev (in section 7.1) to make backend `AppConfig` the single source of truth for both values, eliminating REV-007's dual-declaration drift risk, while keeping backend enforcement of `MIN_GEOCODE_QUERY_LENGTH` as the real security/cost boundary independent of frontend behavior. | Reviewer (REV-006/REV-007) flagged undocumented hardcoded cost-relevant constants; user confirmed alignment with reviewer's concern, directing tech-lead to make an explicit schema decision rather than leave it implicit |
 | 2026-07-11 | Corrected section 5.1's `DetourEvaluator.batchEvaluate` TS interface listing to include the `maxDetourMinutes: number` parameter (positioned after `candidates`, before `config`), matching `src/candidates/detourEvaluator.ts`'s actual signature. Section 4.3 step 8's prose already required this value (the user-supplied FR-002 input) to compute the `qualifies` flag, and it cannot be sourced from `AppConfig` since it is per-request input, not config — the interface listing had simply never been updated to match. No functional/behavioral change; dev's INC-4 implementation (confirmed correct by QA) is unchanged. | Stale-doc gap flagged independently by dev and QA during INC-4; documentation-only correction, no new increment |
+| 2026-07-11 | Batch documentation cleanup on section 5.1, pre-INC-5-audit, consolidating four independent items — no behavior/design change, all already-implemented/QA'd/reviewed code: (1) **REV-011**: replaced the generic `AppConfig` config parameter with each module's actual narrowed type — `AuthGate.check(req, config: Pick<AppConfig, "appMode" \| "paidTierAccessPassword">)`, `RadiusValidator.isWithinServiceArea(point, config: RadiusServiceAreaConfig)` (`= Pick<AppConfig, "geographicCenter" \| "geographicRadiusKm">`), `CandidateGenerator.sampleAlongPolyline(polyline, config: CandidateSamplingConfig)` (`= Pick<AppConfig, "candidateSpacingMeters" \| "maxRawCandidatesSampled" \| "geographicCenter" \| "geographicRadiusKm">`), `DetourEvaluator.batchEvaluate(..., config: DetourEvaluationConfig)` (`= Pick<AppConfig, "distanceMatrixBatchSize">`) — reviewer independently assessed this narrowing pattern as good testability/DI practice, not a risk, so the doc now reflects it rather than the illustrative full-`AppConfig` shorthand. (2) Added the missing `FullyEvaluatedCandidate` type definition (`extends EvaluatedCandidate, TransitResult`) that `Ranker.rank`'s signature already referenced but section 5.1 never defined — matches `src/transit/types.ts`'s implementation exactly (dev's completion of an apparent drafting gap, independently confirmed correct by QA). (3) Added `evaluateShortlist.ts`'s fan-out/concurrency-bounding orchestration (`Pick<AppConfig, "transitModesIncluded" \| "providerConcurrencyLimit">` config, bounded by `PROVIDER_CONCURRENCY_LIMIT`) as a named, documented part of section 5.1's architecture — previously only an implicit implementation detail; QA confirmed the concurrency bound is genuinely enforced, not theoretical. (4) Confirmed (no change needed) that section 10's INC-5 "Covers" line correctly attributes only FR-008 (the live-transit-data requirement) and does not misattribute the "no viable transit" case, which has no dedicated FR and is plumbing for INC-6's FR-012 check. **FR/NFR coverage**: unchanged by this pass — FR-005/FR-006b/FR-009 (INC-4), FR-006c/FR-006d/FR-006e/FR-008 (INC-5) remain covered exactly as before; no FR/NFR newly covered or newly gapped. | Reviewer flagged REV-011 (design-gap, stale `AppConfig` listings) at the INC-1 audit, carried forward; dev/QA independently flagged the missing `FullyEvaluatedCandidate` definition and the undocumented `evaluateShortlist` orchestration during INC-5. Consolidated into one documentation-only pass ahead of reviewer's INC-5 audit, per the orchestrator's request — no user approval needed (no design/behavior change, only already-implemented/QA'd/reviewed code being reflected accurately) |
