@@ -1,0 +1,84 @@
+# CI quality gate for DropSpot.
+#
+# Scope: lint / typecheck / test / build on every push and PR targeting main.
+# Deployment itself is handled separately by Vercel's native GitHub integration
+# (triggered by the same push/PR events) — see docs/runbook.md section 5 for why
+# deploy is intentionally not a step in this workflow.
+#
+# This workflow expects, once dev's INC-1 scaffolding lands, a package.json at
+# repo root with `lint`, `test`, and `build` npm scripts, and a committed
+# package-lock.json (this workflow uses `npm ci`). See docs/runbook.md section 5.
+#
+# Until package.json exists (true as of this workflow's creation, pre-INC-1),
+# the "app code present?" gate below skips install/lint/test/build with a
+# notice instead of failing, so this repo's pre-INC-1 setup commits don't show
+# a permanently red, unactionable CI check. Once package.json is added, this
+# workflow starts enforcing real gates automatically — no edit to this file
+# is needed at that point. Reviewer/QA should confirm at INC-1 that the real
+# gate (not the skip branch) is what's running.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check whether application scaffolding exists yet
+        id: pkgcheck
+        run: |
+          if [ -f package.json ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node.js
+        if: steps.pkgcheck.outputs.exists == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: Install dependencies
+        if: steps.pkgcheck.outputs.exists == 'true'
+        run: npm ci
+
+      - name: Lint
+        if: steps.pkgcheck.outputs.exists == 'true'
+        run: npm run lint --if-present
+
+      - name: Type check
+        if: steps.pkgcheck.outputs.exists == 'true'
+        run: npm run typecheck --if-present
+
+      - name: Test (qa suite)
+        if: steps.pkgcheck.outputs.exists == 'true'
+        run: npm test
+
+      - name: Build
+        if: steps.pkgcheck.outputs.exists == 'true'
+        run: npm run build
+
+      - name: No application code yet
+        if: steps.pkgcheck.outputs.exists == 'false'
+        run: |
+          echo "No package.json found yet — application scaffolding lands in INC-1 per docs/design.md section 10."
+          echo "Skipping install/lint/test/build until then. This is expected pre-INC-1, not a failure."
+
+  # Note: no live Google Maps Platform key is provisioned in this workflow.
+  # The qa suite is expected to run against mocked provider responses
+  # (docs/design.md section 10, INC-6 QA notes) so CI never needs MAP_API_KEY.
+  # See docs/runbook.md section 4.
