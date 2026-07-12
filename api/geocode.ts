@@ -1,8 +1,8 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { AuthGate } from "../src/auth/authGate";
-import { ConfigError, loadConfig } from "../src/config/loader";
-import { GeocodingProviderError } from "../src/geocoding/errors";
-import { createGoogleGeocodingService } from "../src/geocoding/googleGeocodingService";
+import { AuthGate } from "../src/auth/authGate.js";
+import { ConfigError, loadConfig } from "../src/config/loader.js";
+import { GeocodingProviderError } from "../src/geocoding/errors.js";
+import { createGoogleGeocodingService } from "../src/geocoding/googleGeocodingService.js";
 
 function firstQueryValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;

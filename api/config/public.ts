@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { ConfigError, loadConfig } from "../../src/config/loader";
-import { toPublicConfig } from "../../src/config/publicConfig";
+import { ConfigError, loadConfig } from "../../src/config/loader.js";
+import { toPublicConfig } from "../../src/config/publicConfig.js";
 
 /**
  * GET /api/config/public -- design.md section 5.2.

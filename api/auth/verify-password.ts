@@ -1,9 +1,9 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { buildSessionCookieHeader, shouldUseSecureCookie } from "../../src/auth/cookies";
-import { createSessionToken } from "../../src/auth/session";
-import { verifyPassword } from "../../src/auth/verifyPassword";
-import { SESSION_COOKIE_NAME } from "../../src/auth/session";
-import { ConfigError, loadConfig } from "../../src/config/loader";
+import { buildSessionCookieHeader, shouldUseSecureCookie } from "../../src/auth/cookies.js";
+import { createSessionToken } from "../../src/auth/session.js";
+import { verifyPassword } from "../../src/auth/verifyPassword.js";
+import { SESSION_COOKIE_NAME } from "../../src/auth/session.js";
+import { ConfigError, loadConfig } from "../../src/config/loader.js";
 
 /**
  * POST /api/auth/verify-password -- design.md section 5.2.

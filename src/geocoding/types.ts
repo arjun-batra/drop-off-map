@@ -1,4 +1,4 @@
-import type { LatLng } from "../geo/types";
+import type { LatLng } from "../geo/types.js";
 
 /** Mirrors design.md section 5.1's `GeoResult`. */
 export interface GeoResult {

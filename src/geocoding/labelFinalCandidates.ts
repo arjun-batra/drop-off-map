@@ -1,6 +1,6 @@
-import type { LatLng } from "../geo/types";
-import { haversineDistanceKm } from "../geo/radiusValidator";
-import type { GeocodingService } from "./types";
+import type { LatLng } from "../geo/types.js";
+import { haversineDistanceKm } from "../geo/radiusValidator.js";
+import type { GeocodingService } from "./types.js";
 
 export interface LabelableCandidate {
   point: LatLng;

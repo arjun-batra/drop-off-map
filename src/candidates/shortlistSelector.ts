@@ -1,5 +1,5 @@
-import type { AppConfig } from "../config/schema";
-import type { EvaluatedCandidate } from "./detourEvaluator";
+import type { AppConfig } from "../config/schema.js";
+import type { EvaluatedCandidate } from "./detourEvaluator.js";
 
 export type ShortlistSelectionConfig = Pick<AppConfig, "maxTransitEvaluationsPerRequest">;
 

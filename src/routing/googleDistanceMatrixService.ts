@@ -1,6 +1,6 @@
-import type { LatLng } from "../geo/types";
-import { fetchWithTimeout, ProviderTimeoutError, type TimeoutAwareFetch } from "../http/fetchWithTimeout";
-import { RoutingProviderError } from "./errors";
+import type { LatLng } from "../geo/types.js";
+import { fetchWithTimeout, ProviderTimeoutError, type TimeoutAwareFetch } from "../http/fetchWithTimeout.js";
+import { RoutingProviderError } from "./errors.js";
 
 const GOOGLE_DISTANCE_MATRIX_ENDPOINT = "https://maps.googleapis.com/maps/api/distancematrix/json";
 

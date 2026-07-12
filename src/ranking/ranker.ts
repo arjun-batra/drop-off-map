@@ -1,5 +1,5 @@
-import type { AppConfig } from "../config/schema";
-import type { FullyEvaluatedCandidate } from "../transit/types";
+import type { AppConfig } from "../config/schema.js";
+import type { FullyEvaluatedCandidate } from "../transit/types.js";
 
 export type RankingConfig = Pick<AppConfig, "maxCandidatesReturned">;
 // Narrowed per the REV-011 pattern already established across every other

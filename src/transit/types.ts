@@ -1,6 +1,6 @@
-import type { AppConfig } from "../config/schema";
-import type { LatLng } from "../geo/types";
-import type { EvaluatedCandidate } from "../candidates/detourEvaluator";
+import type { AppConfig } from "../config/schema.js";
+import type { LatLng } from "../geo/types.js";
+import type { EvaluatedCandidate } from "../candidates/detourEvaluator.js";
 
 /** Mirrors design.md section 5.1's `TransitResult`. */
 export interface TransitResult {

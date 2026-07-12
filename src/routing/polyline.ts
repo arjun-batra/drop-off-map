@@ -1,4 +1,4 @@
-import type { LatLng } from "../geo/types";
+import type { LatLng } from "../geo/types.js";
 
 /**
  * Decodes a Google-encoded polyline (the format returned by Directions API's

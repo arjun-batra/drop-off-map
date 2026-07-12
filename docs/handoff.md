@@ -1049,3 +1049,57 @@ Comment-only change, no behavior/logic touched. Verified via `grep` across `src/
 - `.env.example`
 - `package.json`, `package-lock.json`
 - `src/routing/googleRoutingService.ts`, `src/routing/types.ts` (REV-017)
+
+---
+
+# Critical production hotfix (2026-07-12): ESM relative-import resolution (`ERR_MODULE_NOT_FOUND`)
+
+Status: fixed, verified, ready for QA. This is a bugfix on already-QA'd/reviewed increments (INC-1 through INC-9), not a new increment — no FR/NFR behavior changed, no design.md content changed.
+
+## Bug
+
+Production (Vercel) was down: every deployed `api/*.ts` handler crashed at cold start with `FUNCTION_INVOCATION_FAILED`, before reaching any of our own try/catch blocks. Vercel's runtime logs showed:
+
+```
+Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/var/task/src/config/loader' imported from /var/task/api/config/public.js
+```
+
+**Root cause**: `package.json` has `"type": "module"`, so Node's real ESM module loader is used at runtime on Vercel. Node's ESM loader requires explicit file extensions on relative import specifiers (`from "../../src/config/loader.js"`); the codebase wrote every relative import extensionless (`from "../../src/config/loader"`). This is valid under `tsconfig.json`'s `"moduleResolution": "bundler"`, which is what Vite (dev server + `npm run build`) and Vitest both use — so it type-checked, built, and passed the entire test suite locally and in CI, and the break was invisible until an actual Node-ESM-runtime cold start (Vercel prod) hit it. No test in `tests/` (Vitest, bundler resolution) can catch this class of bug, by construction — flagging this explicitly since it's a structural blind spot in the current toolchain, not something QA missed.
+
+## Fix
+
+Added explicit `.js` extensions to every relative (`./`, `../`) import/export specifier in every file transitively reachable from an `api/*.ts` handler — i.e., every `api/*.ts` file plus every non-frontend `src/**/*.ts` file. TypeScript's `moduleResolution: "bundler"` explicitly permits writing `.js` in a `.ts` file's specifier even though the on-disk file is `.ts` (it resolves it to the sibling `.ts` file for type-checking, then leaves the specifier as-written in the ESNext-module output) — this is the standard, documented pattern for TS-authored ESM projects, not a workaround. No behavior, exports, or types changed in any file; every edit is purely `"./foo"` -> `"./foo.js"` / `"../bar"` -> `"../bar.js"` on an import/export specifier.
+
+**Files changed (22, all mechanical import-specifier edits only):**
+- `api/auth/verify-password.ts`, `api/config/public.ts`, `api/drop-off-search.ts`, `api/geocode.ts`
+- `src/auth/authGate.ts`
+- `src/candidates/candidateGenerator.ts`, `src/candidates/detourEvaluator.ts`, `src/candidates/shortlistSelector.ts`
+- `src/config/loader.ts`, `src/config/publicConfig.ts`
+- `src/geo/radiusValidator.ts`
+- `src/geocoding/googleGeocodingService.ts`, `src/geocoding/labelFinalCandidates.ts`, `src/geocoding/types.ts`
+- `src/ranking/ranker.ts`
+- `src/routing/googleDistanceMatrixService.ts`, `src/routing/googleRoutingService.ts`, `src/routing/polyline.ts`, `src/routing/types.ts`
+- `src/transit/evaluateShortlist.ts`, `src/transit/googleTransitDirectionsService.ts`, `src/transit/types.ts`
+
+**Files deliberately not touched** (confirmed via a full import-chain trace from every `api/*.ts` handler, not just inspection): `src/auth/cookies.ts`, `src/auth/session.ts`, `src/auth/verifyPassword.ts`, `src/config/schema.ts`, `src/geo/types.ts`, `src/geocoding/errors.ts`, `src/http/fetchWithTimeout.ts`, `src/routing/errors.ts`, `src/search/types.ts` — each has zero relative imports of its own, so there was nothing to fix. All of `src/frontend/**` was left untouched (confirmed no `api/*.ts` or reachable `src/*.ts` file imports anything under `src/frontend/`; the reverse dependency-scan direction — frontend importing backend — is irrelevant here since frontend is never executed by the Node ESM loader in Vercel's serverless function runtime, only bundled by Vite).
+
+## Verification method (why this actually proves the fix, not just "tests still pass")
+
+Per the bug's own root cause, Vitest/`tsc --noEmit`/`vite build` all use bundler-style resolution and are structurally blind to this exact class of bug — so passing them is necessary but explicitly not sufficient proof. Two additional steps were done:
+
+1. **Compiled the real emitted JS with `tsc` (not `vite`) and executed it with a bare `node --input-type=module -e "await import(...)"` against every one of the 4 `api/*.ts` handlers**, using a scratch `tsconfig` (`module: ESNext`, `rootDir` = repo root, `outDir` = a scratch dir) that preserves the exact same `api/...` / `src/...` relative directory layout Vercel deploys under `/var/task/`. This forces Node's real ESM resolver (no bundler, no Vite, no Vitest) to resolve every relative import in the compiled output. All 4 compiled handlers (`api/config/public.js`, `api/geocode.js`, `api/auth/verify-password.js`, `api/drop-off-search.js`) imported successfully with zero `ERR_MODULE_NOT_FOUND`.
+2. **Negative control**: `git stash`'d the fix, recompiled the same way, and re-ran the identical `node --input-type=module -e "await import(...)"` check against the pre-fix code. All 4 handlers failed with exactly the reported production error shape, e.g.:
+   ```
+   Error: Cannot find module '.../out-broken/src/config/loader' imported from '.../out-broken/api/config/public.js'
+   ```
+   This confirms the test methodology genuinely detects the bug (i.e., isn't a false-negative-prone check) before trusting its positive result on the fixed code. `git stash pop` restored the fix afterward; `git diff --stat` was re-checked to confirm all 22 files came back intact.
+3. Additionally invoked the compiled, real-Node-ESM-loaded `api/config/public.js` handler function directly (mock `req`/`res` objects, no HTTP server) end-to-end — it executed its own logic (config validation, `res.status/json` calls) correctly post-import, confirming the fix doesn't just resolve modules but that the resulting code still runs correctly.
+4. `npx vercel build` was attempted (per the orchestrator's suggested option) but requires an authenticated/linked Vercel project (`project_settings_required`) unavailable in this sandbox, so it was not usable here; the `tsc`-compile-plus-bare-`node`-ESM-import approach above was used instead since it directly reproduces Node's real ESM resolver against the exact same file layout Vercel's runtime uses. Recommend QA/release additionally confirm via a real `vercel build` (or an actual redeploy) before considering this fully closed, since that sandbox limitation means the Vercel-specific bundler/build step itself (as opposed to Node's ESM loader, which is what actually threw the reported error and is what this fix targets) hasn't been exercised here.
+
+**Standard regression checks** (necessary but, per above, not sufficient alone): `npm run typecheck`, `npm run lint`, `npm run build`, `npm test` (36 files / 433 tests) all pass cleanly with the fix applied, no changes needed to any test file.
+
+## Known limitations
+
+- `npx vercel build` itself could not be run in this sandbox (no linked Vercel project/credentials) — see point 4 above. This is the one verification gap; everything else needed to prove the fix (real Node ESM module resolution against the exact Vercel-mirrored file layout) was directly reproduced and is deterministic/re-runnable.
+- No test files were added or modified by dev (per scope — qa owns `tests/`); qa should decide whether/how to add a regression test for this exact class of bug (e.g. a CI step that runs `tsc` + bare `node --experimental-vm-modules`/`node --input-type=module` import checks against compiled output, since Vitest itself cannot catch it, as established above).
+- This fix does not touch `src/frontend/**` at all — the frontend bundle (built via `vite build`) was already unaffected by this bug (Vite's bundler resolves extensionless imports at build time regardless of the emitted-module-format concern that only applies to code executed by Node's native loader).

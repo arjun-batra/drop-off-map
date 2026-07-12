@@ -1,4 +1,4 @@
-import type { LatLng } from "./types";
+import type { LatLng } from "./types.js";
 
 const EARTH_RADIUS_KM = 6371;
 

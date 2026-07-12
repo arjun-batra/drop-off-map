@@ -1,21 +1,21 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { randomUUID } from "node:crypto";
-import { AuthGate } from "../src/auth/authGate";
-import { CandidateGenerator } from "../src/candidates/candidateGenerator";
-import { createDetourEvaluator } from "../src/candidates/detourEvaluator";
-import { ShortlistSelector } from "../src/candidates/shortlistSelector";
-import { ConfigError, loadConfig } from "../src/config/loader";
-import { createGoogleGeocodingService } from "../src/geocoding/googleGeocodingService";
-import { labelFinalCandidates } from "../src/geocoding/labelFinalCandidates";
-import { RadiusValidator } from "../src/geo/radiusValidator";
-import { Ranker } from "../src/ranking/ranker";
-import { RoutingProviderError } from "../src/routing/errors";
-import { createGoogleDistanceMatrixService } from "../src/routing/googleDistanceMatrixService";
-import { createGoogleRoutingService } from "../src/routing/googleRoutingService";
-import { DISCLAIMER_TEXT } from "../src/search/types";
-import type { DropOffSearchCandidate, DropOffSearchLocation, DropOffSearchRequest } from "../src/search/types";
-import { evaluateShortlist } from "../src/transit/evaluateShortlist";
-import { createGoogleTransitService } from "../src/transit/googleTransitDirectionsService";
+import { AuthGate } from "../src/auth/authGate.js";
+import { CandidateGenerator } from "../src/candidates/candidateGenerator.js";
+import { createDetourEvaluator } from "../src/candidates/detourEvaluator.js";
+import { ShortlistSelector } from "../src/candidates/shortlistSelector.js";
+import { ConfigError, loadConfig } from "../src/config/loader.js";
+import { createGoogleGeocodingService } from "../src/geocoding/googleGeocodingService.js";
+import { labelFinalCandidates } from "../src/geocoding/labelFinalCandidates.js";
+import { RadiusValidator } from "../src/geo/radiusValidator.js";
+import { Ranker } from "../src/ranking/ranker.js";
+import { RoutingProviderError } from "../src/routing/errors.js";
+import { createGoogleDistanceMatrixService } from "../src/routing/googleDistanceMatrixService.js";
+import { createGoogleRoutingService } from "../src/routing/googleRoutingService.js";
+import { DISCLAIMER_TEXT } from "../src/search/types.js";
+import type { DropOffSearchCandidate, DropOffSearchLocation, DropOffSearchRequest } from "../src/search/types.js";
+import { evaluateShortlist } from "../src/transit/evaluateShortlist.js";
+import { createGoogleTransitService } from "../src/transit/googleTransitDirectionsService.js";
 
 function parseLocation(raw: unknown): DropOffSearchLocation | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;

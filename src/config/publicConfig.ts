@@ -1,4 +1,4 @@
-import type { AppConfig, PublicConfig } from "./schema";
+import type { AppConfig, PublicConfig } from "./schema.js";
 
 /**
  * Strips secrets (mapApiKey, paidTierAccessPassword) from AppConfig,

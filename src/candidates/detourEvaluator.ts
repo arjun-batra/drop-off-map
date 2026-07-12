@@ -1,7 +1,7 @@
-import type { AppConfig } from "../config/schema";
-import type { LatLng } from "../geo/types";
-import type { DistanceMatrixService } from "../routing/googleDistanceMatrixService";
-import type { RawCandidate } from "./candidateGenerator";
+import type { AppConfig } from "../config/schema.js";
+import type { LatLng } from "../geo/types.js";
+import type { DistanceMatrixService } from "../routing/googleDistanceMatrixService.js";
+import type { RawCandidate } from "./candidateGenerator.js";
 
 /** Mirrors design.md section 5.1's `EvaluatedCandidate`. */
 export interface EvaluatedCandidate extends RawCandidate {

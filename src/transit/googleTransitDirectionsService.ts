@@ -1,7 +1,7 @@
-import type { LatLng } from "../geo/types";
-import { fetchWithTimeout, ProviderTimeoutError, type TimeoutAwareFetch } from "../http/fetchWithTimeout";
-import { RoutingProviderError } from "../routing/errors";
-import type { TransitEvaluationConfig, TransitEvaluator, TransitResult } from "./types";
+import type { LatLng } from "../geo/types.js";
+import { fetchWithTimeout, ProviderTimeoutError, type TimeoutAwareFetch } from "../http/fetchWithTimeout.js";
+import { RoutingProviderError } from "../routing/errors.js";
+import type { TransitEvaluationConfig, TransitEvaluator, TransitResult } from "./types.js";
 
 const GOOGLE_TRANSIT_DIRECTIONS_ENDPOINT = "https://maps.googleapis.com/maps/api/directions/json";
 

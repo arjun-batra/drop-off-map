@@ -1,6 +1,6 @@
-import type { AppConfig } from "../config/schema";
-import { parseCookies } from "./cookies";
-import { isValidSessionToken, SESSION_COOKIE_NAME } from "./session";
+import type { AppConfig } from "../config/schema.js";
+import { parseCookies } from "./cookies.js";
+import { isValidSessionToken, SESSION_COOKIE_NAME } from "./session.js";
 
 /**
  * Deliberately narrower than VercelRequest / http.IncomingMessage so this

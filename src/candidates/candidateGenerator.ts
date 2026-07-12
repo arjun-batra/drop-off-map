@@ -1,6 +1,6 @@
-import type { AppConfig } from "../config/schema";
-import type { LatLng } from "../geo/types";
-import { haversineDistanceKm } from "../geo/radiusValidator";
+import type { AppConfig } from "../config/schema.js";
+import type { LatLng } from "../geo/types.js";
+import { haversineDistanceKm } from "../geo/radiusValidator.js";
 
 /** Mirrors design.md section 5.1's `RawCandidate`. */
 export interface RawCandidate {

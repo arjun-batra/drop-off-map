@@ -1,7 +1,7 @@
-import type { LatLng } from "../geo/types";
-import type { AppConfig } from "../config/schema";
-import type { EvaluatedCandidate } from "../candidates/detourEvaluator";
-import type { FullyEvaluatedCandidate, TransitEvaluator } from "./types";
+import type { LatLng } from "../geo/types.js";
+import type { AppConfig } from "../config/schema.js";
+import type { EvaluatedCandidate } from "../candidates/detourEvaluator.js";
+import type { FullyEvaluatedCandidate, TransitEvaluator } from "./types.js";
 
 export type ShortlistTransitEvaluationConfig = Pick<
   AppConfig,

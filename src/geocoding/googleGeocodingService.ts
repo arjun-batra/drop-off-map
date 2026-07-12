@@ -1,7 +1,7 @@
-import type { LatLng } from "../geo/types";
-import { fetchWithTimeout, ProviderTimeoutError, type TimeoutAwareFetch } from "../http/fetchWithTimeout";
-import { GeocodingProviderError } from "./errors";
-import type { GeocodingService, GeoResult } from "./types";
+import type { LatLng } from "../geo/types.js";
+import { fetchWithTimeout, ProviderTimeoutError, type TimeoutAwareFetch } from "../http/fetchWithTimeout.js";
+import { GeocodingProviderError } from "./errors.js";
+import type { GeocodingService, GeoResult } from "./types.js";
 
 const GOOGLE_GEOCODE_ENDPOINT = "https://maps.googleapis.com/maps/api/geocode/json";
 

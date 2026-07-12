@@ -1,8 +1,8 @@
-import type { LatLng } from "../geo/types";
-import { fetchWithTimeout, ProviderTimeoutError, type TimeoutAwareFetch } from "../http/fetchWithTimeout";
-import { decodePolyline } from "./polyline";
-import { RoutingProviderError } from "./errors";
-import type { DirectRouteResult, RoutingService } from "./types";
+import type { LatLng } from "../geo/types.js";
+import { fetchWithTimeout, ProviderTimeoutError, type TimeoutAwareFetch } from "../http/fetchWithTimeout.js";
+import { decodePolyline } from "./polyline.js";
+import { RoutingProviderError } from "./errors.js";
+import type { DirectRouteResult, RoutingService } from "./types.js";
 
 const GOOGLE_DIRECTIONS_ENDPOINT = "https://maps.googleapis.com/maps/api/directions/json";
 
