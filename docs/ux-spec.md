@@ -1,6 +1,6 @@
 # UX Spec: DropSpot
 
-Status: FINAL (pending map-view cost confirmation, §6.7) — ready for Gate 3 review alongside `docs/design.md`.
+Status: FINAL (pending map-view cost confirmation, §6.7) — ready for Gate 3 review alongside `docs/design.md`. **Addendum 2026-07-12**: §4.2a, §5a, §6.6a, and the excluded-candidate notice in §6.4 add the FR-018 ("avoid tolls" checkbox) and FR-019 (toll re-entry confirmation) flow, per the 2026-07-12 change request. This addendum is **DRAFT — pending Gate 3 approval alongside `docs/design.md`'s INC-10..14 plan**, consistent with that document's own status line; it is not yet cleared for build. One item (§9, round-cap edge case) is flagged for tech-lead/user confirmation before INC-14 build, not decided unilaterally here. FR-020 (highway exclusion) requires no UI (silent server-side exclusion, no user-facing state) and is not addressed further in this spec. FR-021 (transit stop/line/direction display on candidate cards) and FR-022 (Google Maps JS API rendering, replacing the Leaflet mockup in §6.7) are **not yet addressed by this spec** and remain a separate designer pass — flagged in §9 so this is a tracked gap, not a silent omission.
 Source: `docs/idea-brief.md`, `docs/requirements.md` (both approved).
 Owner: designer. Do not edit outside this agent.
 
@@ -29,12 +29,13 @@ The user asked for a creative, catchy product name to replace the "Drop-off Poin
 | # | Screen | Shown when | FR/NFR coverage |
 |---|---|---|---|
 | 0 | Password Gate | `APP_MODE = paid_tier` | FR-016, FR-017 |
-| 1 | Input Screen | Always, first screen after gate (or app entry in free-tier mode) | FR-001, FR-002, FR-003, FR-004, FR-015 |
-| 2 | Loading State | After valid submit, while awaiting results | NFR-004 |
-| 3 | Results Screen | On successful computation | FR-005–FR-014 |
-| 4 | Edge/Error States | Out-of-radius, unresolvable address, no viable route, system failure | FR-003, FR-004, FR-011, FR-012 |
+| 1 | Input Screen | Always, first screen after gate (or app entry in free-tier mode) | FR-001, FR-002, FR-003, FR-004, FR-015, FR-018 |
+| 2 | Loading State | After valid submit, while awaiting results; also reused (with swapped copy) while re-computing after a toll re-entry answer | NFR-004, FR-019 |
+| 2a | Toll Road Check (conditional) | Only when `avoidTolls === false` and the search response flags one or more final candidates with `needsTollReentryConfirmation: true` (§5a) | FR-019 |
+| 3 | Results Screen | On successful computation | FR-005–FR-014, FR-019 (excluded-candidate notice) |
+| 4 | Edge/Error States | Out-of-radius, unresolvable address, no viable route, no toll-free route, system failure | FR-003, FR-004, FR-011, FR-012, FR-018 |
 
-Flow: `[Password Gate]` (conditional) → `Input` → `Loading` → `Results` **or** `Error state` (with a path back to `Input`).
+Flow: `[Password Gate]` (conditional) → `Input` → `Loading` → `[Toll Road Check]` (conditional, may repeat once — §5a) → `Results` **or** `Error state` (with a path back to `Input`).
 
 There is no persisted state between sessions (NFR-003): the "back to edit" affordance only preserves values within the current in-memory page session, not across a reload or a new visit.
 
@@ -191,6 +192,8 @@ Single form, four fields, in this order. All fields required before "Find drop-o
 │  │ e.g. 10                         │ │  numeric input
 │  └───────────────────────────────┘ │
 │                                     │
+│  ☐ Avoid tolls                      │  checkbox, unchecked by default
+│                                     │
 │  ┌───────────────────────────────┐ │
 │  │      Find drop-off points        │ │  primary CTA, disabled until valid
 │  └───────────────────────────────┘ │
@@ -239,6 +242,13 @@ Validation timing: address resolution and radius checks run as soon as a suggest
   - Non-numeric or ≤ 0 → inline error: "Enter a number greater than 0."
   - **Resolved:** no upper bound/sanity-check ceiling is enforced. Any positive number is accepted as entered — a plain numeric input with no cap.
 
+### 4.2a Avoid tolls checkbox — FR-018 (2026-07-12 addition)
+
+- Standard checkbox, label "Avoid tolls," `type-body`. Unchecked by default (matches FR-018's stated default), no persistence across sessions (NFR-003/DEC precedent — same treatment as every other input on this screen).
+- No helper caption is needed under the checkbox in the common case — the checkbox is self-explanatory. Do **not** attempt to explain the toll re-entry question (§5a) here; that question, when it applies, is self-contained and explains itself at the point it's actually asked. Front-loading that explanation on the Input Screen for every user, regardless of whether it will ever apply to their trip, would violate this spec's "fast-feeling, low-friction, no speculative screens" posture (§0 principle 1) — most sessions will never see §5a at all.
+- Effect on downstream flow (for designer/dev orientation, not user-facing copy): when checked, every driving-route calculation excludes toll roads entirely (FR-018) and the toll re-entry question (§5a) never appears, since no toll segment can exist to exit/re-enter (FR-019's own scope). When unchecked (default), driving routes may use tolls, and §5a's confirmation step appears if — and only if — the computed results actually contain a re-entry pattern.
+- **New empty-result outcome when checked (FR-018/OQ-9):** if no toll-free route exists at all between the given start/destination, the Results screen renders the "No toll-free route found" state instead of any cards — see §6.6a.
+
 ### 4.3 Primary CTA — "Find drop-off points"
 
 - Disabled (visual: `color-text-disabled` on `color-bg-page`-tinted background, no pointer) until all three locations are resolved and the detour field is valid.
@@ -276,6 +286,113 @@ Replaces the form (not a modal over it) once submission starts. Full-viewport, c
   > "Still working — this is taking a little longer than usual."
   Do not show an error until the request actually fails or times out server-side; a slow-but-succeeding request should never show a false error.
 
+**5.1 Reuse for toll re-entry re-computation (2026-07-12, FR-019):** this same screen (same layout, same spinner, same "Cancel" affordance) is reused — not a new screen — after the user answers §5a's Toll Road Check and taps "Continue," while `POST /api/drop-off-search/confirm-toll-reentry` runs. Only the copy differs:
+```
+   Updating your results…
+
+   Removing the option(s) you didn't
+   want and re-checking what's left.
+```
+"Cancel" here returns to the Input screen exactly as it does on the initial search (not back to the Toll Road Check screen — cancelling a search is a full restart, consistent with the rest of this spec's linear-flow principle, §0.1). The same "taking longer than usual" copy swap applies if this re-computation also runs long.
+
+---
+
+## 5a. Screen 2a — Toll Road Check (conditional, FR-019, 2026-07-12 addition)
+
+### 5a.0 Where this sits in the flow, and why
+
+Tech-lead's design (`docs/design.md` §4.6/§1.4) deliberately left the interaction model as an open design call, recommending a stateless "batch-ask-once, one bounded confirm round-trip" shape for cost/latency reasons, and flagged three placement options for designer to choose among: (1) a general preference asked upfront on the Input Screen, (2) a bounded interstitial step between Loading and Results, or (3) an inline per-candidate prompt on the Results screen itself.
+
+**Decision: option (2) — a conditional interstitial screen between Loading and Results, shown only when it is actually needed.** Rationale:
+- The question is a fact about a *specific computed route* ("does this candidate's actual driven route exit and re-enter a toll highway"), not a general preference the user could meaningfully answer before any computation exists — asking it upfront on the Input Screen (option 1) would mean asking speculatively, every session, regardless of whether any candidate ever has this pattern. Per §0 principle 1 (no speculative screens) and this project's general "never ask a question whose answer doesn't yet have a real basis" posture, this is worse UX than asking only once the pattern is confirmed to exist.
+- An inline per-candidate prompt directly on the Results screen (option 3) would mean showing the user a set of cards that could still change (some might vanish once answered "no"), which risks the results screen reading as unstable/half-finished, and doesn't map cleanly onto the stateless "recompute via a second endpoint call" mechanism tech-lead designed (§5.2's `confirm-toll-reentry` — a full response replaces the prior one; it isn't a targeted patch to a subset of already-rendered cards).
+- A dedicated interstitial, shown **only when at least one final candidate is actually flagged** (`needsTollReentryConfirmation: true` on any candidate in the search response), keeps the common case (most trips, most regions, never involve this pattern at all) completely unaffected — zero added screens, zero added friction — while giving the rarer affected case a clear, single-purpose moment to decide, before results are shown. This mirrors this spec's existing precedent of conditional screens (Password Gate, Fallback banner, empty states) that only render when their triggering condition is actually true.
+
+### 5a.1 Batch vs. sequential, and once-for-the-trip vs. per-candidate — designer's call
+
+**Decision: present all currently-flagged candidates together on one screen (batched), but require an explicit answer per candidate, not one blanket answer for the whole trip.**
+
+Rationale: the re-entry pattern is a property of each candidate's own driven route (`start → candidate → driverDestination`), computed independently per candidate (`docs/design.md` §4.6 step 1) — different candidates can have different patterns, or no pattern at all, even within the same result set. Collapsing this to a single "yes/no for the whole trip" question would either (a) force acceptance of a pattern the user might reject for one specific candidate just because they accepted it for another, or (b) force rejection of a candidate that's actually fine, just because a *different* candidate in the same batch has the same or a different toll issue. Per-candidate answers, batched into a single screen (not sequential one-at-a-time screens), give the user precise control while still keeping this to exactly one screen and one round-trip in the common case — matching tech-lead's stateless, cost-bounded design intent (`docs/design.md` §4.6, `confirm-toll-reentry`'s `rejectedCandidateLocations: Array<...>` request shape already supports exactly this granularity).
+
+### 5a.2 Mockup — first round (initial flagged candidates)
+
+```
+┌───────────────────────────────────┐
+│  ← Edit search                      │
+│                                     │
+│  One quick question about            │  type-h2
+│  toll roads                         │
+│                                     │
+│  One or more of your route options   │  type-body, color-text-secondary
+│  use a toll highway, but get off it   │
+│  and back on again during the trip —  │
+│  meaning you'd pay the toll twice      │
+│  instead of once. Let us know if       │
+│  that's okay for each option below.    │
+│                                     │
+│ ┌─ Oak Ave & Main St ─────────────┐│
+│ │ Uses Highway 407 — exits and       ││  type-body-small,
+│ │ re-enters it during this trip.      ││  color-text-secondary
+│ │                                     ││
+│ │ ┌───────────────┐ ┌──────────────┐││
+│ │ │ ✓ Yes, that's  │ │ ✕ No, don't   │││  two equal-weight
+│ │ │   fine          │ │   include it  │││  toggle buttons
+│ │ └───────────────┘ └──────────────┘││
+│ └────────────────────────────────┘│
+│                                     │
+│ ┌─ Elm St & 5th Ave ──────────────┐│
+│ │  …same structure, own answer…      ││
+│ └────────────────────────────────┘│
+│                                     │
+│  ┌───────────────────────────────┐ │
+│  │            Continue              │ │  primary CTA
+│  └───────────────────────────────┘ │
+└───────────────────────────────────┘
+```
+
+**Components**
+- "← Edit search": identical affordance/behavior to the Results screen's (§6.3) — returns to Input with all four values preserved. Choosing to edit the search here is a legitimate exit from this screen (e.g., the user decides they'd rather just check "Avoid tolls" instead of answering).
+- Title: `type-h2`. Explainer paragraph: `type-body`, `color-text-secondary`. Copy deliberately avoids jargon ("toll road exit/re-entry," "re-entry pattern") in favor of a plain restatement of the real-world consequence (paying the toll twice instead of once) — consistent with §0's "never fail silently, never speak in jargon a driver mid-trip would have to decode" posture.
+- One card per flagged candidate, in the **same rank/order position** the candidate held in the search response (so a user who glanced at "candidate near Oak Ave" mentally maps it consistently, even though full Results aren't shown yet). Card header reuses the same reverse-geocoded label the Results card will use (§6.4) — same visual vocabulary, `type-h2` header style.
+- Pattern description line: renders the response's `tollReentryDescription` field verbatim (e.g., "exits and re-enters Highway 407") wrapped in a short fixed lead-in ("Uses {highway} — {description}"). If `tollReentryDescription` is absent/empty for some reason, fall back to generic copy: "This route gets on and off a toll highway more than once during the trip."
+- **Two toggle buttons per card, not a single checkbox.** Neither is pre-selected — an explicit tap is required on one of the two before that card counts as "answered." (No default/implicit answer — see §5a.4's rationale, matching this spec's existing "never silently assume consent" posture, e.g. §3's password gate, §4.1's validation-before-submit approach.)
+  - "Yes, that's fine" — selected state: filled `color-brand-primary` background, `color-on-brand-primary` text/icon (check).
+  - "No, don't include it" — selected state: `color-danger-border` outline, `color-danger-text` text/icon (X). Choosing this does not remove the card from this screen (the user should still be able to change their mind before tapping Continue) — exclusion only takes effect once Continue is tapped and the confirm request is sent.
+  - Unselected/default state (before either is tapped): both buttons render as neutral outline buttons (`color-border-default`, `color-text-primary`), same visual weight — deliberately not defaulting either option to look "recommended," since this is a genuine yes/no question, not a suggested action.
+- Primary CTA "Continue": **disabled until every card on screen has an explicit answer.** This is a deliberate parallel to the Input Screen's "CTA disabled until all fields valid" pattern (§4.3) — same mechanism, same reasoning (force a complete, explicit answer set before proceeding, never submit a partial/assumed one).
+
+### 5a.3 What happens on Continue
+
+Tapping "Continue" sends `POST /api/drop-off-search/confirm-toll-reentry` (`docs/design.md` §5.2) with `originalRequest` (the untouched original search inputs) and `rejectedCandidateLocations` set to exactly the candidates the user marked "No" (an empty array if every card was answered "Yes" — this is a valid, meaningful request, not skipped, since it's still the mechanism that finalizes the ranked/fallback result and picks up the map polyline etc.). The screen transitions to the Loading screen's reused "Updating your results…" variant (§5.1) while this call is in flight.
+
+### 5a.4 Second round — a newly-promoted candidate also needs confirmation
+
+Per `docs/design.md` §4.6 step 4, excluding a candidate can promote a previously-unchecked candidate into the final result set, and that newly-promoted candidate may itself carry `needsTollReentryConfirmation: true` in the confirm endpoint's response. **Decision: show this exact same screen a second time, for only the newly-flagged candidate(s)** — not the ones already answered in round one (their answers stand; do not re-ask). Distinguish it from round one with a small copy change so it doesn't read as a bug/repeat:
+
+```
+   One more thing
+
+   Removing your earlier choice(s)
+   brought in a replacement option that
+   also needs a quick check.
+```
+(Replaces the round-one explainer paragraph; card/button mechanics are identical to §5a.2.)
+
+Tapping "Continue" here calls `confirm-toll-reentry` again, with `rejectedCandidateLocations` extended to include this round's new "No" answers alongside the first round's (the request always carries the full cumulative rejection set — this endpoint re-derives the whole search deterministically from `originalRequest` each time per `docs/design.md` §5.2, so there is no partial/incremental state to track client-side beyond this one array).
+
+**Hard cap: at most two confirmation rounds (this screen shown at most twice) per search.** This bounds worst-case added latency/friction to two short interstitials, matching tech-lead's own stated intent of a small, bounded number of round-trips rather than an open-ended chain (`docs/design.md` §4.6's closing paragraph). If, in the rare case of several rounds of exclusion/promotion cascading, the *second* confirm call's response still contains a newly-flagged candidate that has never been shown to the user, **do not show a third screen** — see §9 for how this edge case is resolved and why it is flagged for tech-lead/user confirmation rather than settled unilaterally here.
+
+### 5a.5 States
+
+| State | Behavior |
+|---|---|
+| Card unanswered | Both toggle buttons neutral/outline; Continue disabled if any card is in this state |
+| Card answered "Yes" | Button fills `color-brand-primary`; candidate stays in the final result set |
+| Card answered "No" | Button outlines `color-danger-border`; candidate is excluded once Continue is submitted |
+| User taps "← Edit search" | Returns to Input screen, values preserved (identical to Results screen behavior, §6.3); no confirm request is ever sent |
+| Confirm request in flight | Loading screen, "Updating your results…" variant (§5.1) |
+| Confirm request fails (network/provider error) | Same System/Network Failure state as §7 ("Something went wrong…"), with "Try again" re-issuing the identical confirm request (same inputs, same answers already given — the user should never have to re-answer the toll questions because of a transient network failure) |
+
 ---
 
 ## 6. Screen 3 — Results Screen
@@ -296,6 +413,10 @@ Replaces the form (not a modal over it) once submission starts. Full-viewport, c
 │ [ Fallback warning banner — only    │  conditional, FR-011
 │   shown if no candidate met the     │
 │   detour threshold ]                │
+│                                     │
+│ [ Excluded-candidate notice — only  │  conditional, FR-019
+│   shown after a §5a toll-reentry    │
+│   answer removed 1+ candidates ]    │
 │                                     │
 │ ┌─ #1  BEST OPTION ───────────────┐│
 │ │ Oak Ave & Main St                 ││  type-h2
@@ -346,6 +467,18 @@ Ordered top to bottom by rank (ascending passenger total time per FR-010). Each 
   - Passenger: Walk to stop (FR-006c), Wait + transit (FR-006d), Total to destination (FR-006e).
 - All times rendered as "`N min`" (round to nearest minute; sub-minute precision is not useful to a driver mid-trip). Detour value in the fallback card only (6.5) is additionally colored `color-danger-text` to draw the eye to the number that's over the threshold.
 
+### 6.4a Excluded-candidate notice — FR-019 (2026-07-12 addition)
+
+Per §0 principle 3 ("never fail silently"), a candidate the user excluded via §5a's toll re-entry question must never simply disappear from the result count with no explanation — a driver who mentally registered "there should be 3 options" and now sees fewer needs to know why, otherwise this reads as a bug, not a result of their own answer.
+
+- Shown only when the Results screen is reached via §5a (i.e., the request path included at least one `confirm-toll-reentry` call with a non-empty `rejectedCandidateLocations`). Never shown on a first-pass search that never triggered §5a at all (the common case) — this is not a generic disclaimer, it only applies to this specific path.
+- Position: directly below the disclaimer banner/trip summary and above the fallback warning banner if both are present (fallback and toll-exclusion can co-occur, e.g., excluding a candidate could itself be *why* the search ends in a fallback result).
+- Style: a plain informational line, not a warning — `type-body-small`, `color-text-secondary`, no icon, no colored background (this is expected, requested behavior resulting directly from the user's own prior answer, not a problem or a degraded state, so it should not visually compete with the fallback/disclaimer banners' warning styling).
+- Copy (count-substituted, singular/plural handled):
+  > "1 option was hidden because it exits and re-enters a toll highway during the trip, per your answer."
+  > "2 options were hidden because they exit and re-enter a toll highway during the trip, per your answer."
+- If the exclusion(s) result in **zero** remaining candidates, this notice is superseded by — not shown alongside — the `no_viable_option` empty state (§6.6), whose own copy should read naturally as a consequence of the search generally (the empty state's existing generic copy already covers this; no toll-specific empty-state variant is introduced, since `no_viable_option`'s trigger reason is not otherwise distinguished in this spec, e.g. "no transit reachable" and "every candidate excluded by your answers" already share the same message treatment).
+
 ### 6.5 Fallback state ("closest anyway") — FR-011
 
 Triggered when zero candidates meet the user's detour threshold. Differences from the normal 3-card layout:
@@ -384,6 +517,32 @@ If the system cannot produce even one candidate (e.g., no transit reachable from
 **Disclaimer, decided (closes REV-015): the disclaimer banner does NOT render on this state.** An earlier version of this spec showed the banner here with the annotation "harmless, consistent — no reason to hide it." That annotation is superseded and should be disregarded — it created a real conflict with design.md §5.2's narrower, `candidates.length > 0`-scoped contract (logged as REV-015). Final decision: this state has no suggested drop-off point on screen, and the disclaimer's entire purpose (§6.2, §0 principle 2) is to caution the driver about a specific suggested point before using it — there is nothing here to caution about, so the banner is omitted, not hidden-but-present. This matches design.md §5.2 and the shipped INC-7 implementation (`showDisclaimer` is `false` whenever `candidates.length === 0`) exactly; no code change follows from this clarification. See §6.2 for the full scope statement, which applies identically to `out_of_service_area`/`invalid_input`/`timeout` (§7) — none of these states show the disclaimer, for the same reason.
 
 Note this is distinct from the out-of-radius case (Screen 1, §4.1), which blocks earlier at input time and never reaches computation.
+
+### 6.6a No toll-free route found — FR-018/OQ-9 (2026-07-12 addition)
+
+Shown only when "Avoid tolls" (§4.2a) is checked and the backend determines no reasonably toll-free driving route exists at all between the given start and destination (`status: "no_toll_free_route"`, `docs/design.md` §4.1a) — a message-only/empty-result outcome, deliberately given the same visual treatment as §6.6's "no viable option" state (per FR-018's explicit text: "similar in shape to the existing FR-012 no viable option pattern," not a fallback-with-warning):
+
+```
+┌───────────────────────────────────┐
+│                                     │
+│         (map-pin-slash icon)        │
+│                                     │
+│   No toll-free route found           │  type-h2
+│                                     │
+│   We couldn't find a route that      │  type-body, color-text-secondary
+│   avoids tolls for this trip.         │
+│   Uncheck "Avoid tolls" to see        │
+│   toll-inclusive options, or try a     │
+│   different start or destination.      │
+│                                     │
+│  ┌───────────────────────────────┐ │
+│  │        ← Edit search             │ │
+│  └───────────────────────────────┘ │
+└───────────────────────────────────┘
+```
+
+- No disclaimer banner (§6.2's scope — no candidate is on screen to caution about), no map panel (§6.7), no "Try again" CTA (unlike §7's system-failure state, this is a deterministic outcome of the same inputs, not a transient failure — retrying without changing anything would produce the same result, so only "← Edit search" is offered, exactly matching §6.6's precedent).
+- This state never reaches §5a — the toll re-entry question (FR-019) explicitly only applies when tolls are allowed (`avoidTolls === false`); when tolls are being avoided entirely, there is no toll segment to exit/re-enter, so this path and §5a's path are mutually exclusive by construction.
 
 ### 6.7 Optional enhancement — Map view (pending cost confirmation)
 
@@ -445,11 +604,18 @@ Applies whenever the backend request itself fails (timeout, provider outage, une
 
 ## 9. Open UX Questions
 
-All prior open questions have been resolved by the user (see below). One item remains open pending a tech-lead confirmation already in progress; it does not block Gate 3 sign-off on the rest of this spec.
+All prior open questions have been resolved by the user (see below). Several items remain open; none blocks Gate 3 sign-off on the rest of this spec, but two (items 2 and 3 below) are new as of the 2026-07-12 FR-018/FR-019 addendum and should be routed to tech-lead/pm before INC-14 build starts, not treated as silently settled by this spec alone.
 
 **Remaining:**
 
 1. **"Taking longer than expected" threshold (§5):** the exact wait time before the loading screen's copy changes, and the point at which a slow request is treated as a hard failure (§7), should match whatever request timeout tech-lead configures server-side. Needs a config value name/handoff from `docs/design.md`. This is an implementation-detail coordination item, not a UX decision, and does not block Gate 3.
+
+2. **(New, 2026-07-12) Round-cap edge-case behavior for §5a's toll re-entry confirmation — flagged for tech-lead/user, not decided unilaterally here.** §5a.4 hard-caps the toll re-entry confirmation to at most two rounds (two screen showings) per search, to bound worst-case latency/friction, per tech-lead's own stated intent of a small bounded number of round-trips rather than an open-ended chain. This spec has **not** decided what happens in the rare residual case where, after the second (capped) confirm call, the response still contains a newly-promoted candidate that has never been shown to the user for confirmation. Two candidate resolutions, with genuinely different product consequences:
+   - **(a) Auto-exclude at the cap** (drop the unconfirmed candidate the same way an explicit "No" would, and fold it into §6.4a's excluded-candidate count/copy) — conservative, never shows the user something not affirmatively approved, consistent with this spec's "never assume consent" posture (§5a.2's no-default-answer design), but technically shows the user *fewer* candidates than the underlying search actually found, without ever having asked about the specific one being dropped.
+   - **(b) Auto-include at the cap, with a passive disclosure** (show the candidate in final Results, with a small note on its card acknowledging the pattern exists but wasn't re-confirmed) — surfaces more genuine options to the user, but risks reading as inconsistent ("why did you ask me about the first two toll patterns but not this one") and is arguably a closer literal reading of FR-019's "the system shall present the user with a question" (unqualified by round count) — an outcome dev/QA/reviewer could later flag as a gap against FR-019's letter if (a) is chosen instead.
+   Designer's recommendation, if forced to pick one today without further input, leans **(a)** (safer, more consistent with this spec's existing conservative defaults elsewhere), but this is exactly the kind of requirements-interpretation trade-off (how literally must FR-019's "shall present... a question" be honored against a designed round cap) that this project's no-inference rule says should go to the user via pm, not be resolved silently by designer alone — flagging it here rather than picking (a) and moving on. This is expected to be a genuinely rare case in practice (requires at least two rounds of exclusion-then-promotion, each producing a further re-entry-flagged candidate).
+
+3. **(New, 2026-07-12) FR-020, FR-021, FR-022 UI treatment not yet in this spec.** This addendum's scope was FR-018 (avoid-tolls checkbox, §4.2a) and FR-019 (toll re-entry confirmation flow, §5a/§6.4a/§6.6a) only, per the task that produced it. FR-020 (highway exclusion) needs no UI — it is a silent, always-on server-side candidate filter with no user-visible state. FR-021 (transit stop/line/direction detail on every candidate card) and FR-022 (replacing §6.7's Leaflet map mockup with Google Maps JavaScript API rendering) still need a designer pass — tracked here so this is a known, explicit gap rather than an accidental omission, not something requiring user input to resolve (it's simply not-yet-done work).
 
 **Resolved (for record):**
 
@@ -467,4 +633,5 @@ All prior open questions have been resolved by the user (see below). One item re
 | Date | Change |
 |---|---|
 | 2026-07-11 | Added "Lookup failed (provider/network error)" to §4.1's field-states table, closing the traceability gap flagged in review-log.md REV-008. This documents the state dev added during INC-2 for when a geocoding lookup itself fails to complete (network/provider error), distinct from "Unresolvable address" (lookup completed, no match found). Copy: "We couldn't check that address right now. Please try again." Applies to all three location fields (lookup-mechanism failure, not field-specific business logic). User confirmed keeping this addition. |
+| 2026-07-12 | **FR-018/FR-019 addendum (toll avoidance checkbox and toll re-entry confirmation flow), status DRAFT pending Gate 3.** Added: §4.2a "Avoid tolls" checkbox on the Input Screen (FR-018), plus its new empty-result outcome, "No toll-free route found" (§6.6a, FR-018/OQ-9). Added new conditional Screen 2a, "Toll Road Check" (§5a, FR-019) — a batched, per-candidate confirmation interstitial shown between Loading and Results only when the search response flags one or more final candidates with a toll-road exit/re-entry pattern; resolves tech-lead's explicitly-flagged open interaction-model question (`docs/design.md` §1.4/§4.6) in favor of a conditional interstitial (not an upfront Input-Screen question, not an inline Results-screen prompt), batched presentation with per-candidate (not whole-trip) answers, and a hard two-round cap matching tech-lead's stateless/bounded-round-trip design intent. Added §6.4a, the excluded-candidate notice on Results, so a candidate the user rejected via §5a never simply vanishes without explanation (§0 principle 3). Updated §1's screen inventory table and flow line, and §5's Loading screen (§5.1) to note its reuse (with swapped copy) during toll re-entry re-computation. Flagged one genuine open question in §9 (round-cap residual edge case — auto-exclude vs. auto-include-with-disclosure) for tech-lead/user rather than resolved unilaterally, and explicitly noted FR-020/FR-021/FR-022 UI treatment remains outside this addendum's scope, tracked as a known gap. | Designer task, part of the FR-018–FR-022 change request (`docs/requirements.md` FR-018/FR-019, approved 2026-07-12; `docs/design.md` §1.4/§4.6, DRAFT pending user approval). Tech-lead deliberately left the FR-019 interaction model as a genuine UX decision rather than presenting a finalized contract, recommending only the underlying stateless two-endpoint mechanism (batch-ask-once, one bounded confirm round-trip) for cost/latency reasons — this entry is designer's resolution of that flagged decision. |
 | 2026-07-11 | **Closes REV-015.** Resolved the §6.2/§6.6 disclaimer-scope ambiguity the reviewer flagged: §6.6's `no_viable_option` mockup previously showed the disclaimer banner present with an annotation ("harmless, consistent — no reason to hide it") that conflicted with design.md §5.2's narrower `candidates.length > 0` contract and the shipped INC-7 code. **Decision: the disclaimer is scoped to `ranked`/`fallback` only** (states that show a suggested drop-off point) and is explicitly **not** shown on `no_viable_option`, `out_of_service_area`, `invalid_input`, or `timeout`/system-failure states. Rationale: the disclaimer's purpose is to caution the driver about a *specific suggested point* before using it (§0 principle 2); a state with no point on screen has nothing to caution about. This choice matches the already-implemented behavior — no code change required. §6.2 now states this scope explicitly; §6.6's mockup no longer shows the banner and its annotation is superseded. Designer judgment call, not escalated to the user (reviewer confirmed no candidate is ever shown without the disclaimer under either reading, so no safety exposure was at stake either way). |
