@@ -1,4 +1,4 @@
-import type { AppConfig, AppMode, GeoPoint, MapRoutingProvider, TransitModesIncluded } from "./schema";
+import type { AppConfig, AppMode, GeoPoint, MapRoutingProvider, TransitModesIncluded } from "./schema.js";
 
 export type Env = Record<string, string | undefined>;
 

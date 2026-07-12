@@ -1103,3 +1103,78 @@ Per the bug's own root cause, Vitest/`tsc --noEmit`/`vite build` all use bundler
 - `npx vercel build` itself could not be run in this sandbox (no linked Vercel project/credentials) — see point 4 above. This is the one verification gap; everything else needed to prove the fix (real Node ESM module resolution against the exact Vercel-mirrored file layout) was directly reproduced and is deterministic/re-runnable.
 - No test files were added or modified by dev (per scope — qa owns `tests/`); qa should decide whether/how to add a regression test for this exact class of bug (e.g. a CI step that runs `tsc` + bare `node --experimental-vm-modules`/`node --input-type=module` import checks against compiled output, since Vitest itself cannot catch it, as established above).
 - This fix does not touch `src/frontend/**` at all — the frontend bundle (built via `vite build`) was already unaffected by this bug (Vite's bundler resolves extensionless imports at build time regardless of the emitted-module-format concern that only applies to code executed by Node's native loader).
+
+---
+
+# REV-018 recurrence prevention (2026-07-12): ESLint rule + CI-runnable ESM verification script
+
+Status: implemented, smoke-tested, no FR/NFR behavior change. Implements both of reviewer's two recommendations from `docs/review-log.md`'s "Post-Closure Incident Audit — REV-018" section, item 2 (numbers 1 and 2 in that section).
+
+## 1. ESLint rule: `import-x/extensions` (`eslint.config.js`)
+
+Added `eslint-plugin-import-x` (the actively-maintained ESLint-9-flat-config-native fork of `eslint-plugin-import`; chosen over the original because it has first-class flat-config support and its built-in Node resolver needs no separate `eslint-import-resolver-node` install — both `eslint-import-resolver-node` and `@typescript-eslint/utils` are optional peers, confirmed via `npm view`, so nothing extra was pulled in beyond the plugin itself). New devDependency: `eslint-plugin-import-x`.
+
+`eslint.config.js` gained one new flat-config block:
+
+```js
+{
+  files: ["api/**/*.{ts,tsx}", "src/**/*.{ts,tsx}"],
+  ignores: ["src/frontend/**"],
+  plugins: { "import-x": importX },
+  rules: {
+    "import-x/extensions": ["error", "always", { ignorePackages: true }],
+  },
+},
+```
+
+- Scoped via flat config's documented `files` + `ignores` combination (files matching `files` minus anything matching `ignores`), exactly the `api/**` + non-frontend `src/**` scope reviewer specified — confirmed this works as intended by deliberately breaking an extensionless import in `src/frontend/components/DisclaimerBanner.tsx` (0 lint errors, correctly out of scope) vs. the same pattern in `api/geocode.ts` (1 `import-x/extensions` error, correctly caught).
+- `ignorePackages: true` so bare/npm specifiers (`"react"`, `"vite"`, etc.) and Node built-ins are unaffected — only relative (`./`, `../`) specifiers are required to carry an extension.
+- Type-only imports (`import type { X } from "./y"`) are not checked by this rule's default (`checkTypeImports: false`), which is correct for this specific bug class: `import type` is fully erased by `tsc` at compile time (no runtime import statement is ever emitted), so it cannot trigger `ERR_MODULE_NOT_FOUND` regardless of whether it carries an extension — confirmed this reasoning directly by testing (see Verification section below).
+- Also added a small `**/*.mjs` flat-config block (`languageOptions.globals: globals.node`, `sourceType: "module"`) so the new verification script below (a plain `.mjs` file, not matched by the existing `**/*.{ts,tsx}` block) doesn't fail lint on `no-undef` for `process`/`console`.
+- Ran `npm run lint` across the whole repo after adding the rule: **0 new violations** anywhere, including `scripts/viteApiMiddleware.ts` (explicitly double-checked per the orchestrator's flag — it already carries `.js` on its dynamic `import("../api/...")` calls from the original hotfix, and `scripts/` is dev-only tooling outside this rule's scope in any case) and every file across `api/**`/non-frontend `src/**`. This confirms the REV-018 hotfix's extension coverage was already complete — the rule found nothing new to fix.
+
+## 2. CI-runnable real-Node-ESM-resolution script (`scripts/verify-esm-resolution.mjs`)
+
+New file, plain Node ESM (`.mjs`, no TS-execution tool like `ts-node`/`tsx` was added as a dependency — the script needs no types itself and this avoids a new toolchain dependency). New npm script: **`"verify:esm": "node scripts/verify-esm-resolution.mjs"`**, run via `npm run verify:esm`.
+
+What it does, mirroring exactly the methodology dev used in the hotfix (this file's "Critical production hotfix" section above) and QA independently reproduced (`docs/test-report.md`'s "Hotfix Verification" section):
+
+1. Recursively discovers every `api/**/*.ts` handler file (no hardcoded list — currently resolves to the 4 handlers: `api/config/public.ts`, `api/auth/verify-password.ts`, `api/geocode.ts`, `api/drop-off-search.ts`).
+2. Generates a scratch `tsconfig` (`extends: "./tsconfig.json"`, so it stays in sync with the real project config's `lib`/`strict`/etc.) that overrides only `module: "ESNext"`, `noEmit: false`, `outDir`/`rootDir` (an OS-tempdir scratch directory and the repo root, respectively — this preserves the same `api/...`/`src/...` relative layout Vercel's `/var/task/` uses), and `include`/`exclude` (`api/**/*.ts` + `src/**/*.ts`, excluding `src/frontend/**`).
+3. Compiles with the local `node_modules/typescript/bin/tsc` binary (via `execFileSync`) — if compilation itself fails, prints the compiler output and exits 1 (a distinct failure mode from an ESM-resolution failure, but still a real gate).
+4. Imports each compiled handler with a real, unbundled `await import(pathToFileURL(...))` — this is genuine Node ESM resolution, no Vite/Vitest/bundler involved.
+5. Reports per-handler OK/FAIL, and on any failure, prints the full error (including the `ERR_MODULE_NOT_FOUND` stack) plus a fixed explanatory message pointing at the REV-018 failure class, then exits 1. Cleans up the scratch tsconfig file and scratch output directory in a `finally` block regardless of outcome.
+
+### Proof this is a real regression guard, not decoration
+
+1. **Ran against the current (fixed) codebase**: `npm run verify:esm` → compiles cleanly, all 4 handlers import cleanly, exit 0, `PASS` message.
+2. **Negative control**: temporarily removed the `.js` extension from a genuine **value**-level relative import — `src/auth/authGate.ts`'s `import { parseCookies } from "./cookies.js"` → `"./cookies"`. (Note: the task's suggested example file, `src/config/loader.ts`, turned out to have only a `import type` relative specifier, which `tsc` fully erases at compile time and therefore can never produce `ERR_MODULE_NOT_FOUND` regardless of extension — verified this directly before choosing a different file, so the negative control would actually exercise a real runtime failure rather than a no-op.) Re-ran `npm run verify:esm`:
+   - Exit code 1.
+   - `api/auth/verify-password.ts` and `api/config/public.ts` still `OK` (neither reaches `authGate.ts`'s import chain — `config/public.ts` is deliberately unauthenticated per design.md, `auth/verify-password.ts` doesn't call `AuthGate.check`).
+   - `api/geocode.ts` and `api/drop-off-search.ts` both `FAIL`, with the exact reported production error shape reproduced verbatim:
+     ```
+     Error [ERR_MODULE_NOT_FOUND]: Cannot find module '.../src/auth/cookies' imported from '.../src/auth/authGate.js'
+     ```
+   - The script's explanatory footer correctly printed, pointing at REV-018 and instructing to add the missing extension.
+3. **Restored the fix** (`git diff` confirmed `src/auth/authGate.ts` byte-identical to before the test, zero stray changes), re-ran `npm run verify:esm` → clean `PASS` again, exit 0.
+
+This confirms the script both passes on correct code and — genuinely, not by construction/assumption — fails with the exact REV-018 error shape on a reintroduced instance of the bug, then passes again once reverted.
+
+## Files touched
+
+- `eslint.config.js` — new `import-x/extensions` rule block (scoped `api/**` + non-frontend `src/**`) + a small `**/*.mjs` globals block.
+- `package.json` — new devDependency `eslint-plugin-import-x`; new script `"verify:esm"`.
+- `package-lock.json` — updated for the new devDependency.
+- `scripts/verify-esm-resolution.mjs` — new file (the verification script itself).
+- `src/config/loader.ts` — no functional change; its one relative specifier (`import type ... from "./schema"`) now carries `.js` for stylistic consistency with every other relative import in the codebase (harmless no-op for emitted output, since `import type` is erased entirely).
+
+## How to run
+
+- Lint (includes the new rule): `npm run lint`.
+- ESM verification: `npm run verify:esm`. Exits 0 with a `PASS` summary listing all 4 handlers on success; exits 1 with a per-handler error (including the raw Node error) and a fixed explanatory footer on failure. No environment variables, network access, or Vercel credentials required.
+
+## Known limitations
+
+- The ESLint rule and the verification script are complementary, not redundant, exactly per reviewer's framing: the lint rule catches a new extensionless relative import the moment it's typed (editor-visible, no compile step), but only the verification script also catches other real-Node-ESM-incompatible code a lint rule wouldn't (e.g. a stray `require()`, a case-sensitivity mismatch on a case-insensitive dev filesystem) — neither substitutes for the other.
+- Per reviewer's item 3, a real `vercel build`/deploy dry-run remains explicitly out of scope for both of these additions (and for this sandbox) — that is release's job at the actual deploy step, not a per-PR CI gate. `npm run verify:esm` requires no Vercel credentials and gets CI to the same *correctness* guarantee (real Node ESM resolution) without that coupling, per reviewer's own reasoning for recommending it as the primary fix.
+- Wiring `npm run verify:esm` into `.github/workflows/ci.yml` itself is explicitly **not** done here — per the task's scope, that's release's job to coordinate separately; this pass only adds the script and the lint rule.

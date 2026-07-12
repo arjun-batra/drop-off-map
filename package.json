@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run --passWithNoTests",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "verify:esm": "node scripts/verify-esm-resolution.mjs"
   },
   "dependencies": {
     "leaflet": "^1.9.4",
