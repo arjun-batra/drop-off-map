@@ -1,6 +1,6 @@
 # CI quality gate for DropSpot.
 #
-# Scope: lint / typecheck / test / build on every push and PR targeting main.
+# Scope: lint / typecheck / test / build / verify:esm on every push and PR targeting main.
 # Deployment itself is handled separately by Vercel's native GitHub integration
 # (triggered by the same push/PR events) — see docs/runbook.md section 5 for why
 # deploy is intentionally not a step in this workflow.
@@ -71,6 +71,10 @@ jobs:
       - name: Build
         if: steps.pkgcheck.outputs.exists == 'true'
         run: npm run build
+
+      - name: Verify ESM resolution (REV-018 recurrence guard)
+        if: steps.pkgcheck.outputs.exists == 'true'
+        run: npm run verify:esm
 
       - name: No application code yet
         if: steps.pkgcheck.outputs.exists == 'false'
