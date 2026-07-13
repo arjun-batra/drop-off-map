@@ -163,7 +163,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 
   try {
     const directRoute = await routingService.getDirectRoute(start, driverDestination);
-    const rawCandidates = CandidateGenerator.sampleAlongPolyline(directRoute.polyline, config);
+    const rawCandidates = CandidateGenerator.sampleAlongPolyline(directRoute.polyline, directRoute.steps, config);
     const evaluatedCandidates = await detourEvaluator.batchEvaluate(
       start,
       driverDestination,

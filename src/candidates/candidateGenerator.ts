@@ -1,6 +1,8 @@
 import type { AppConfig } from "../config/schema.js";
 import type { LatLng } from "../geo/types.js";
 import { haversineDistanceKm } from "../geo/radiusValidator.js";
+import type { DirectionStep } from "../routing/types.js";
+import { isLimitedAccessHighway } from "../routing/tollHighwayRules.js";
 
 /** Mirrors design.md section 5.1's `RawCandidate`. */
 export interface RawCandidate {
@@ -18,9 +20,17 @@ export type CandidateSamplingConfig = Pick<
  * section 4.2's Phase 1 algorithm. Pure geo math, no provider calls -- the
  * whole point of this phase is to be "free" before the batched Distance
  * Matrix evaluation (detourEvaluator.ts) spends any budget.
+ *
+ * `steps` (design.md section 4.2a/INC-11, FR-020): the same `DirectionStep[]`
+ * already fetched by `RoutingService.getDirectRoute`'s Phase 0 call (section
+ * 4.1a) -- no new provider call. Each sampled point is attributed to its
+ * enclosing step by cumulative distance and dropped outright if that step
+ * matches `isLimitedAccessHighway()`, the same hard-rejection treatment as
+ * the existing out-of-service-radius drop below (not a flag applied later,
+ * per FR-020's "excluded from the candidate list before ranking" text).
  */
 export const CandidateGenerator = {
-  sampleAlongPolyline(polyline: LatLng[], config: CandidateSamplingConfig): RawCandidate[] {
+  sampleAlongPolyline(polyline: LatLng[], steps: DirectionStep[], config: CandidateSamplingConfig): RawCandidate[] {
     if (polyline.length < 2) return [];
 
     // Cumulative distance (meters) at each polyline vertex, used to walk the
@@ -44,6 +54,7 @@ export const CandidateGenerator = {
 
     const candidates: RawCandidate[] = [];
     let segmentIndex = 0;
+    let stepIndex = 0;
 
     // sampleIndex doubles as the route-order index (design.md section 4.2
     // step 4/FR-010) -- it reflects position along the route in sampling
@@ -69,6 +80,23 @@ export const CandidateGenerator = {
         lat: segStart.lat + (segEnd.lat - segStart.lat) * t,
         lng: segStart.lng + (segEnd.lng - segStart.lng) * t,
       };
+
+      // design.md section 4.2a/FR-020: attribute this candidate to its
+      // enclosing Directions step by cumulative distance (advance stepIndex
+      // to the first step whose cumulative distance reaches this point --
+      // the same monotonic-walk technique used for `segmentIndex` above),
+      // and drop it outright if that step matches the limited-access
+      // highway allowlist. A missing/empty `steps` list (defensive; not the
+      // expected path since this is the same Phase 0 response the polyline
+      // itself came from) fails open -- no candidate is wrongly excluded
+      // just because step data happened to be absent.
+      while (stepIndex < steps.length - 1 && steps[stepIndex]!.cumulativeDistanceMeters < targetDistance) {
+        stepIndex++;
+      }
+      const enclosingStep = steps[stepIndex];
+      if (enclosingStep !== undefined && isLimitedAccessHighway(enclosingStep)) {
+        continue;
+      }
 
       // design.md section 4.2 step 4: drop candidates that fall outside the
       // service radius even though start/driverDestination are both inside

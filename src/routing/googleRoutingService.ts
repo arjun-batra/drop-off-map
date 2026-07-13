@@ -2,15 +2,22 @@ import type { LatLng } from "../geo/types.js";
 import { fetchWithTimeout, ProviderTimeoutError, type TimeoutAwareFetch } from "../http/fetchWithTimeout.js";
 import { decodePolyline } from "./polyline.js";
 import { RoutingProviderError } from "./errors.js";
-import type { DirectRouteResult, RoutingService } from "./types.js";
+import type { DirectionStep, DirectRouteResult, RoutingService } from "./types.js";
 
 const GOOGLE_DIRECTIONS_ENDPOINT = "https://maps.googleapis.com/maps/api/directions/json";
 
 type FetchLike = TimeoutAwareFetch;
 
+interface GoogleDirectionsStep {
+  html_instructions?: string;
+  distance?: { value: number };
+  maneuver?: string;
+}
+
 interface GoogleDirectionsLeg {
   duration: { value: number };
   duration_in_traffic?: { value: number };
+  steps?: GoogleDirectionsStep[];
 }
 
 interface GoogleDirectionsRoute {
@@ -120,9 +127,29 @@ export function createGoogleRoutingService(options: GoogleRoutingServiceOptions)
       // doesn't support traffic modeling).
       const durationSeconds = leg.duration_in_traffic?.value ?? leg.duration.value;
 
+      // design.md section 4.1a/INC-11: retain the response's own step list
+      // (previously discarded after polyline decoding) rather than issuing
+      // any new call -- this is the same Directions response already fetched
+      // above. `cumulativeDistanceMeters` is the running total from the
+      // start of the route through the end of each step, which
+      // candidateGenerator.ts uses to attribute a sampled point to its
+      // enclosing step (design.md section 4.2a).
+      let cumulativeDistanceMeters = 0;
+      const steps: DirectionStep[] = (leg.steps ?? []).map((step) => {
+        const distanceMeters = step.distance?.value ?? 0;
+        cumulativeDistanceMeters += distanceMeters;
+        return {
+          instructionsHtml: step.html_instructions ?? "",
+          distanceMeters,
+          cumulativeDistanceMeters,
+          maneuver: step.maneuver,
+        };
+      });
+
       return {
         durationMinutes: durationSeconds / 60,
         polyline: decodePolyline(route.overview_polyline.points),
+        steps,
       };
     },
   };

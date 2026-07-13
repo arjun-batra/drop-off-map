@@ -66,10 +66,15 @@ function markerColors(variant: "ranked" | "fallback", rank: number): { fill: str
 /**
  * ux-spec.md section 6.7 (2026-07-12): "Custom-colored markers, not default
  * red Google pins" -- builds a small colored-circle SVG (rank number, or "!"
- * for the fallback state) as a data-URI `google.maps.Icon`, matching the
- * same rank-1/rank-other/fallback color coding the candidate cards already
- * use (see ResultsScreen.css), plus a focus-ring-colored halo when this
- * marker is the tap-highlighted one.
+ * for the fallback state) as a data-URI `google.maps.Icon`. REV-019: this
+ * introduces its own rank-1/rank-other/fallback marker color distinction --
+ * it does NOT reuse an existing coding from the candidate cards. The cards
+ * (see ResultsScreen.css's `.results-screen__rank-badge`) render every
+ * non-fallback rank badge in the same color; only the fallback badge is
+ * visually distinct there. On the map, `markerColors()` above additionally
+ * distinguishes rank 1 (brand-primary) from every other rank (secondary
+ * gray), a visual distinction the cards don't make. Also adds a
+ * focus-ring-colored halo when this marker is the tap-highlighted one.
  */
 function buildMarkerIcon(
   rank: number,
