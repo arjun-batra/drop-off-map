@@ -7,6 +7,53 @@ import * as api from "../../src/frontend/api";
 import type { SearchOutcome } from "../../src/frontend/api";
 import { DISCLAIMER_TEXT } from "../../src/search/types";
 
+/**
+ * INC-10 (FR-022): unlike the rest of this file, one describe block below
+ * (the map async-load-failure end-to-end check) exercises the REAL
+ * `MapView` component -- not a stub -- through the real `SearchFlow` ->
+ * `ResultsScreen` composition, to verify the same "does a crash here take
+ * down the rest of the screen" bar REV-012 already established for the
+ * disclaimer, but for the new async (Promise-rejection) load-failure path
+ * `@googlemaps/js-api-loader` introduces (an `ErrorBoundary` alone cannot
+ * catch a rejected Promise). Every other test in this file leaves
+ * `googleMapsJsApiKey: null`, so `MapView` is never mounted for them and
+ * this mock is simply never exercised -- the default (resolve) here would
+ * only matter if a future test in this file also enabled the map without
+ * overriding it.
+ */
+const mapLoaderState = vi.hoisted(() => {
+  class NoopMap {
+    fitBounds() {}
+    setCenter() {}
+    setZoom() {}
+  }
+  class NoopMarker {
+    addListener() {
+      return { remove() {} };
+    }
+    setIcon() {}
+    setMap() {}
+  }
+  class NoopPolyline {
+    setMap() {}
+  }
+  class NoopBounds {
+    extend() {}
+  }
+  return { shouldFail: false, NoopMap, NoopMarker, NoopPolyline, NoopBounds };
+});
+vi.mock("@googlemaps/js-api-loader", () => ({
+  setOptions: vi.fn(),
+  importLibrary: vi.fn(async (name: string) => {
+    if (mapLoaderState.shouldFail) {
+      throw new Error("mock Google Maps JS API load failure (SearchFlow end-to-end check)");
+    }
+    if (name === "marker") return { Marker: mapLoaderState.NoopMarker };
+    if (name === "maps") return { Map: mapLoaderState.NoopMap, Polyline: mapLoaderState.NoopPolyline };
+    return { LatLngBounds: mapLoaderState.NoopBounds, Size: class {}, Point: class {} };
+  }),
+}));
+
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 let container: HTMLDivElement;
@@ -21,8 +68,7 @@ const config: PublicConfig = {
   minGeocodeQueryLength: 3,
   geocodeDebounceMs: 300,
   responseTimeTargetSeconds: 5,
-  mapTileUrlTemplate: null,
-  mapTileAttribution: null,
+  googleMapsJsApiKey: null,
 };
 
 const RESOLVED = { lat: 43.66, lng: -79.4, label: "456 Bay St, Toronto, ON" };
@@ -38,6 +84,7 @@ afterEach(() => {
   });
   container.remove();
   vi.restoreAllMocks();
+  mapLoaderState.shouldFail = false;
 });
 
 async function flush() {
@@ -47,10 +94,10 @@ async function flush() {
   });
 }
 
-function render() {
+function render(overrideConfig: PublicConfig = config) {
   act(() => {
     root = createRoot(container);
-    root.render(<SearchFlow config={config} />);
+    root.render(<SearchFlow config={overrideConfig} />);
   });
 }
 
@@ -477,6 +524,61 @@ describe("SearchFlow -- ux-spec.md Input -> Loading -> Results | Error orchestra
       await flush();
 
       expect(container.textContent).toContain("DropSpot");
+      consoleErrorSpy.mockRestore();
+    });
+  });
+
+  describe("INC-10/FR-022: map async-load-failure resilience, same bar as REV-012 (real MapView + real ErrorBoundary composition, not mocked out)", () => {
+    it("a Google Maps JS API load failure (rejected importLibrary() promise) omits only the map panel -- candidate cards and the FR-014 disclaimer survive untouched, exactly like a synchronous crash would under REV-012", async () => {
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      mapLoaderState.shouldFail = true;
+      render({ ...config, googleMapsJsApiKey: "test-gmaps-js-key" });
+      vi.spyOn(api, "searchDropOffPoints").mockResolvedValue({
+        ok: true,
+        response: {
+          status: "ranked",
+          candidates: [
+            {
+              rank: 1,
+              location: { lat: 43.66, lng: -79.4 },
+              label: "Oak Ave & Main St",
+              routeOrderIndex: 0,
+              driveTimeToDropoffMinutes: 8,
+              detourMinutes: 3,
+              walkTimeMinutes: 4,
+              waitTimeMinutes: 5,
+              transitTimeMinutes: 17,
+              passengerTotalTimeMinutes: 26,
+              driverTotalTimeMinutes: 27,
+              exceedsThreshold: false,
+            },
+          ],
+          route: [
+            { lat: 43.6532, lng: -79.3832 },
+            { lat: 43.7, lng: -79.4 },
+          ],
+          disclaimer: DISCLAIMER_TEXT,
+          requestId: "r1",
+          timingMs: 5,
+        },
+      });
+
+      await fillAndSubmit();
+      // Give MapView's async init() a chance to reject and settle loadFailed.
+      await flush();
+      await flush();
+
+      // The map panel never appears (async guard renders null, not a broken
+      // panel) -- MapView.tsx's own container div carries this class.
+      expect(container.querySelector(".map-view")).toBeNull();
+      // ...but the rest of the Results screen is completely unaffected: the
+      // candidate card and the FR-014 disclaimer (rendered as a sibling
+      // outside ResultsScreen's ErrorBoundary, per REV-012) both render
+      // normally in the very same pass.
+      expect(container.textContent).toContain("Oak Ave & Main St");
+      expect(container.textContent).toContain(DISCLAIMER_TEXT);
+      // No uncaught exception reached the top of the component tree -- if it
+      // had, `fillAndSubmit`/`flush`'s act() calls would have thrown.
       consoleErrorSpy.mockRestore();
     });
   });

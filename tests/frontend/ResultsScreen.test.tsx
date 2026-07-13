@@ -5,16 +5,16 @@ import type { PublicConfig } from "../../src/config/schema";
 import { ResultsScreen } from "../../src/frontend/components/ResultsScreen";
 import type { DropOffSearchRequest, DropOffSearchResponse } from "../../src/search/types";
 
-// INC-9: MapView renders real Leaflet, which crashes in jsdom (no SVG
-// renderer support -- confirmed independently: L.polyline().addTo(map)
-// throws "Cannot use 'in' operator to search for '_leaflet_id' in null"
-// under jsdom, a jsdom/Leaflet environment limitation, not a code defect --
-// see docs/test-report.md's INC-9 section). ResultsScreen's own tests mock
+// INC-10: MapView renders via Google's Maps JavaScript API, loaded
+// asynchronously through @googlemaps/js-api-loader -- no real key/network is
+// available in this test environment. ResultsScreen's own tests mock
 // MapView out entirely so they can verify the *composition* (when the panel
 // is shown/hidden, what props it receives, the tap-to-highlight wiring) --
-// MapView's own internal Leaflet wiring (tile layer, markers, marker
-// variants, polyline) is covered separately in MapView.test.tsx, which mocks
-// the `leaflet` module itself instead of relying on jsdom to run real Leaflet.
+// MapView's own internal Google Maps JS API wiring (custom markers, muted
+// style, disableDefaultUI/zoomControl, async-load-failure guard, polyline)
+// is covered separately in MapView.test.tsx, which mocks
+// `@googlemaps/js-api-loader` itself instead of relying on jsdom to run a
+// real Google Maps script load.
 //
 // `mockMapViewSpy` (name starts with "mock", per Vitest's hoisting
 // convention) is safe to reference inside the vi.mock factory below even
@@ -25,8 +25,7 @@ vi.mock("../../src/frontend/components/MapView", () => ({
     route: Array<{ lat: number; lng: number }>;
     candidates: Array<{ rank: number; location: { lat: number; lng: number } }>;
     variant: "ranked" | "fallback";
-    tileUrlTemplate: string;
-    tileAttribution: string;
+    apiKey: string;
     onSelectCandidate: (rank: number) => void;
   }) => {
     mockMapViewSpy(props);
@@ -44,14 +43,12 @@ vi.mock("../../src/frontend/components/MapView", () => ({
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const MAP_CONFIG: Pick<PublicConfig, "mapTileUrlTemplate" | "mapTileAttribution"> = {
-  mapTileUrlTemplate: "https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
-  mapTileAttribution: "© OpenStreetMap contributors © CARTO",
+const MAP_CONFIG: Pick<PublicConfig, "googleMapsJsApiKey"> = {
+  googleMapsJsApiKey: "test-gmaps-js-key",
 };
 
-const NO_MAP_CONFIG: Pick<PublicConfig, "mapTileUrlTemplate" | "mapTileAttribution"> = {
-  mapTileUrlTemplate: null,
-  mapTileAttribution: null,
+const NO_MAP_CONFIG: Pick<PublicConfig, "googleMapsJsApiKey"> = {
+  googleMapsJsApiKey: null,
 };
 
 const ROUTE = [
@@ -86,7 +83,7 @@ function render(
   response: DropOffSearchResponse,
   onEditSearch = vi.fn(),
   onTryAgain = vi.fn(),
-  mapConfig: Pick<PublicConfig, "mapTileUrlTemplate" | "mapTileAttribution"> = MAP_CONFIG,
+  mapConfig: Pick<PublicConfig, "googleMapsJsApiKey"> = MAP_CONFIG,
 ) {
   act(() => {
     root = createRoot(container);
@@ -369,7 +366,7 @@ describe("ResultsScreen -- ux-spec.md section 6, FR-010/FR-011/FR-012/FR-013", (
     expect(container.textContent).toContain("789 King St");
   });
 
-  describe("Map view (ux-spec.md section 6.7, INC-9)", () => {
+  describe("Map view (ux-spec.md section 6.7, INC-10/FR-022)", () => {
     const RANKED_CANDIDATE = {
       rank: 1,
       location: { lat: 43.66, lng: -79.4 },
@@ -402,7 +399,7 @@ describe("ResultsScreen -- ux-spec.md section 6, FR-010/FR-011/FR-012/FR-013", (
       route: ROUTE,
     };
 
-    it("renders the map panel on a ranked response with a route and tile config present, passing the correct route/candidates/variant through", () => {
+    it("renders the map panel on a ranked response with a route and API key present, passing the correct route/candidates/variant/apiKey through", () => {
       render(RANKED_RESPONSE);
       const mapEl = container.querySelector('[data-testid="mock-map-view"]');
       expect(mapEl).not.toBeNull();
@@ -411,12 +408,10 @@ describe("ResultsScreen -- ux-spec.md section 6, FR-010/FR-011/FR-012/FR-013", (
       expect(mockMapViewSpy).toHaveBeenCalledTimes(1);
       const props = mockMapViewSpy.mock.calls[0]![0] as {
         route: unknown;
-        tileUrlTemplate: string;
-        tileAttribution: string;
+        apiKey: string;
       };
       expect(props.route).toEqual(ROUTE);
-      expect(props.tileUrlTemplate).toBe(MAP_CONFIG.mapTileUrlTemplate);
-      expect(props.tileAttribution).toBe(MAP_CONFIG.mapTileAttribution);
+      expect(props.apiKey).toBe(MAP_CONFIG.googleMapsJsApiKey);
     });
 
     it("renders the map panel on a fallback response, with the 'fallback' variant and exactly one candidate", () => {
@@ -427,15 +422,11 @@ describe("ResultsScreen -- ux-spec.md section 6, FR-010/FR-011/FR-012/FR-013", (
       expect(mapEl!.getAttribute("data-candidate-count")).toBe("1");
     });
 
-    it("configurability: a differently-configured tile provider is passed through, not a hardcoded URL/attribution", () => {
-      const customConfig = {
-        mapTileUrlTemplate: "https://tiles.example.org/{z}/{x}/{y}.png",
-        mapTileAttribution: "(c) Example Tiles Inc.",
-      };
+    it("configurability: a differently-configured GOOGLE_MAPS_JS_API_KEY is passed through, not a hardcoded value", () => {
+      const customConfig = { googleMapsJsApiKey: "a-completely-different-key-789" };
       render(RANKED_RESPONSE, vi.fn(), vi.fn(), customConfig);
-      const props = mockMapViewSpy.mock.calls[0]![0] as { tileUrlTemplate: string; tileAttribution: string };
-      expect(props.tileUrlTemplate).toBe(customConfig.mapTileUrlTemplate);
-      expect(props.tileAttribution).toBe(customConfig.mapTileAttribution);
+      const props = mockMapViewSpy.mock.calls[0]![0] as { apiKey: string };
+      expect(props.apiKey).toBe(customConfig.googleMapsJsApiKey);
     });
 
     it("gracefully omits the map (not shown broken) on no_viable_option, even though tile config is present -- there is nothing to plot", () => {
@@ -456,21 +447,18 @@ describe("ResultsScreen -- ux-spec.md section 6, FR-010/FR-011/FR-012/FR-013", (
       }
     });
 
-    it("gracefully omits the map when the tile provider isn't configured (mapTileUrlTemplate/mapTileAttribution null), while the candidate cards still render fine", () => {
+    it("gracefully omits the map when GOOGLE_MAPS_JS_API_KEY isn't configured (null), while the candidate cards still render fine", () => {
       render(RANKED_RESPONSE, vi.fn(), vi.fn(), NO_MAP_CONFIG);
       expect(container.querySelector('[data-testid="mock-map-view"]')).toBeNull();
       expect(mockMapViewSpy).not.toHaveBeenCalled();
       // Cards must still render normally -- the map is the *only* thing
-      // gated by tile config, not the rest of the Results screen.
+      // gated by the API key, not the rest of the Results screen.
       expect(container.querySelectorAll(".results-screen__card")).toHaveLength(2);
       expect(container.textContent).toContain("Oak Ave & Main St");
     });
 
-    it("gracefully omits the map when only one of the two tile-config values is set (belt-and-suspenders -- both must be present)", () => {
-      render(RANKED_RESPONSE, vi.fn(), vi.fn(), {
-        mapTileUrlTemplate: "https://tiles.example.org/{z}/{x}/{y}.png",
-        mapTileAttribution: null,
-      });
+    it("gracefully omits the map when GOOGLE_MAPS_JS_API_KEY is an empty string (falsy, treated the same as unset)", () => {
+      render(RANKED_RESPONSE, vi.fn(), vi.fn(), { googleMapsJsApiKey: "" });
       expect(container.querySelector('[data-testid="mock-map-view"]')).toBeNull();
     });
 

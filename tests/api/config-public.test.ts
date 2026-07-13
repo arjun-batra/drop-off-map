@@ -31,12 +31,43 @@ describe("GET /api/config/public", () => {
       minGeocodeQueryLength: 3,
       geocodeDebounceMs: 300,
       responseTimeTargetSeconds: 5,
-      // INC-9: optional tile-provider config, null when unset (validEnv()
-      // doesn't set MAP_TILE_URL_TEMPLATE/MAP_TILE_ATTRIBUTION) -- this is the
-      // documented "map view disabled" default, not a bug.
-      mapTileUrlTemplate: null,
-      mapTileAttribution: null,
+      // INC-10 (FR-022): optional Google Maps JS API key, null when unset
+      // (validEnv() doesn't set GOOGLE_MAPS_JS_API_KEY) -- this is the
+      // documented "map view disabled" default, not a bug. Replaces INC-9's
+      // retired mapTileUrlTemplate/mapTileAttribution fields.
+      googleMapsJsApiKey: null,
     });
+  });
+
+  it("INC-10/FR-022: exposes GOOGLE_MAPS_JS_API_KEY when configured -- the first and only intentionally client-exposed Google credential (DEC-7)", () => {
+    applyEnv(validEnv({ GOOGLE_MAPS_JS_API_KEY: "gmaps-js-key-public" }));
+    const { req, res, jsonBody } = createMock({ method: "GET" });
+    handler(req, res);
+    expect((jsonBody() as { googleMapsJsApiKey: string }).googleMapsJsApiKey).toBe("gmaps-js-key-public");
+  });
+
+  it("INC-10/FR-022: googleMapsJsApiKey is the only new field exposed by this endpoint -- MAP_API_KEY (server-side, distinct credential) is still never leaked even when both keys are configured", () => {
+    applyEnv(
+      validEnv({ MAP_API_KEY: "server-side-secret", GOOGLE_MAPS_JS_API_KEY: "browser-exposed-key" }),
+    );
+    const { req, res, jsonBody } = createMock({ method: "GET" });
+    handler(req, res);
+    const body = jsonBody() as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual(
+      [
+        "appMode",
+        "geographicCenter",
+        "geographicRadiusKm",
+        "maxCandidatesReturned",
+        "transitModesIncluded",
+        "minGeocodeQueryLength",
+        "geocodeDebounceMs",
+        "responseTimeTargetSeconds",
+        "googleMapsJsApiKey",
+      ].sort(),
+    );
+    expect(JSON.stringify(body)).not.toContain("server-side-secret");
+    expect(body.googleMapsJsApiKey).toBe("browser-exposed-key");
   });
 
   it("configurability: reflects changed MIN_GEOCODE_QUERY_LENGTH/GEOCODE_DEBOUNCE_MS rather than fixed values (REV-006/REV-007)", () => {

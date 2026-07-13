@@ -49,12 +49,13 @@ describe("loadConfig -- happy path", () => {
       minGeocodeQueryLength: 3,
       geocodeDebounceMs: 300,
       sessionLifetimeSeconds: 3600,
-      // INC-9: optional, null when MAP_TILE_URL_TEMPLATE/MAP_TILE_ATTRIBUTION
-      // are unset (validEnv() doesn't set them) -- the documented "map view
-      // disabled" default, not a hardcoded fallback (see loader.ts's
-      // parseOptionalString, which never pushes a `problems` entry either way).
-      mapTileUrlTemplate: null,
-      mapTileAttribution: null,
+      // INC-10: optional, null when GOOGLE_MAPS_JS_API_KEY is unset
+      // (validEnv() doesn't set it) -- the documented "map view disabled"
+      // default, not a hardcoded fallback (see loader.ts's
+      // parseOptionalString, which never pushes a `problems` entry either
+      // way). Replaces INC-9's retired mapTileUrlTemplate/mapTileAttribution
+      // fields.
+      googleMapsJsApiKey: null,
     });
   });
 
@@ -129,59 +130,56 @@ describe("loadConfig -- configurability (catches hardcoded values)", () => {
     expect(config.sessionLifetimeSeconds).toBe(60);
   });
 
-  it("reflects a changed MAP_TILE_URL_TEMPLATE/MAP_TILE_ATTRIBUTION rather than a hardcoded provider (INC-9, design.md section 3.1a)", () => {
+  it("reflects a changed GOOGLE_MAPS_JS_API_KEY value rather than a hardcoded/absent one (INC-10, FR-022)", () => {
+    const config = loadConfig(validEnv({ GOOGLE_MAPS_JS_API_KEY: "gmaps-js-key-abc123" }));
+    expect(config.googleMapsJsApiKey).toBe("gmaps-js-key-abc123");
+  });
+
+  it("GOOGLE_MAPS_JS_API_KEY is threaded independently of MAP_API_KEY -- changing one never affects the other (DEC-7: distinct credentials)", () => {
     const config = loadConfig(
-      validEnv({
-        MAP_TILE_URL_TEMPLATE: "https://tiles.example.org/{z}/{x}/{y}.png",
-        MAP_TILE_ATTRIBUTION: "(c) Example Tiles Inc.",
-      }),
+      validEnv({ MAP_API_KEY: "server-side-key", GOOGLE_MAPS_JS_API_KEY: "browser-side-key" }),
     );
-    expect(config.mapTileUrlTemplate).toBe("https://tiles.example.org/{z}/{x}/{y}.png");
-    expect(config.mapTileAttribution).toBe("(c) Example Tiles Inc.");
+    expect(config.mapApiKey).toBe("server-side-key");
+    expect(config.googleMapsJsApiKey).toBe("browser-side-key");
+    expect(config.googleMapsJsApiKey).not.toBe(config.mapApiKey);
   });
 });
 
-describe("loadConfig -- MAP_TILE_URL_TEMPLATE/MAP_TILE_ATTRIBUTION are optional (INC-9), unlike every other key in this schema", () => {
-  it("does NOT fail config loading when both are entirely unset -- 'map view disabled' is a valid, supported configuration, not a misconfiguration", () => {
+describe("loadConfig -- GOOGLE_MAPS_JS_API_KEY is optional (INC-10, FR-022), unlike most keys in this schema", () => {
+  it("does NOT fail config loading when unset -- 'map view disabled' is a valid, supported configuration, not a misconfiguration", () => {
     const env = validEnv();
-    delete env.MAP_TILE_URL_TEMPLATE;
-    delete env.MAP_TILE_ATTRIBUTION;
+    delete env.GOOGLE_MAPS_JS_API_KEY;
     expect(() => loadConfig(env)).not.toThrow();
     const config = loadConfig(env);
-    expect(config.mapTileUrlTemplate).toBeNull();
-    expect(config.mapTileAttribution).toBeNull();
-  });
-
-  it("does NOT fail when only one of the two is set (the frontend's own showMap check is what enforces 'both or neither', not the loader)", () => {
-    const env = validEnv({ MAP_TILE_URL_TEMPLATE: "https://tiles.example.org/{z}/{x}/{y}.png" });
-    delete env.MAP_TILE_ATTRIBUTION;
-    expect(() => loadConfig(env)).not.toThrow();
-    const config = loadConfig(env);
-    expect(config.mapTileUrlTemplate).toBe("https://tiles.example.org/{z}/{x}/{y}.png");
-    expect(config.mapTileAttribution).toBeNull();
+    expect(config.googleMapsJsApiKey).toBeNull();
   });
 
   it("treats a whitespace-only value as unset (null), not as a literal whitespace string", () => {
-    const config = loadConfig(validEnv({ MAP_TILE_URL_TEMPLATE: "   ", MAP_TILE_ATTRIBUTION: "  " }));
-    expect(config.mapTileUrlTemplate).toBeNull();
-    expect(config.mapTileAttribution).toBeNull();
+    const config = loadConfig(validEnv({ GOOGLE_MAPS_JS_API_KEY: "   " }));
+    expect(config.googleMapsJsApiKey).toBeNull();
   });
 
-  it("every OTHER config key remains required-with-no-fallback even when the map-tile keys are unset -- the optionality is scoped to exactly these two keys, not a general relaxation", () => {
+  it("every OTHER config key remains required-with-no-fallback even when GOOGLE_MAPS_JS_API_KEY is unset -- the optionality is scoped to exactly this key, not a general relaxation", () => {
     const env = validEnv();
-    delete env.MAP_TILE_URL_TEMPLATE;
-    delete env.MAP_TILE_ATTRIBUTION;
+    delete env.GOOGLE_MAPS_JS_API_KEY;
     delete env.MAP_API_KEY;
     expect(() => loadConfig(env)).toThrow(ConfigError);
     try {
       loadConfig(env);
     } catch (err) {
       expect((err as ConfigError).problems.some((p) => p.includes("MAP_API_KEY"))).toBe(true);
-      // The two map-tile keys must never appear in the problem list -- they
-      // are optional, so their absence is never itself a "problem".
-      expect((err as ConfigError).problems.some((p) => p.includes("MAP_TILE_URL_TEMPLATE"))).toBe(false);
-      expect((err as ConfigError).problems.some((p) => p.includes("MAP_TILE_ATTRIBUTION"))).toBe(false);
+      // GOOGLE_MAPS_JS_API_KEY must never appear in the problem list -- it
+      // is optional, so its absence is never itself a "problem".
+      expect((err as ConfigError).problems.some((p) => p.includes("GOOGLE_MAPS_JS_API_KEY"))).toBe(false);
     }
+  });
+
+  it("retired MAP_TILE_URL_TEMPLATE/MAP_TILE_ATTRIBUTION env vars are ignored entirely (INC-10 cleanup) -- setting them has no effect and they never appear on AppConfig", () => {
+    const config = loadConfig(
+      validEnv({ MAP_TILE_URL_TEMPLATE: "https://tiles.example.org/{z}/{x}/{y}.png", MAP_TILE_ATTRIBUTION: "(c) Example" }),
+    );
+    expect(config).not.toHaveProperty("mapTileUrlTemplate");
+    expect(config).not.toHaveProperty("mapTileAttribution");
   });
 });
 

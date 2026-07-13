@@ -18,8 +18,7 @@ const baseConfig: PublicConfig = {
   minGeocodeQueryLength: 3,
   geocodeDebounceMs: 300,
   responseTimeTargetSeconds: 5,
-  mapTileUrlTemplate: null,
-  mapTileAttribution: null,
+  googleMapsJsApiKey: null,
 };
 
 // A resolved point far outside Toronto's 200km default radius (Vancouver).

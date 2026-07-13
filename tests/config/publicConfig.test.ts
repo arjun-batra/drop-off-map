@@ -4,7 +4,7 @@ import { toPublicConfig } from "../../src/config/publicConfig";
 import { validPaidTierEnv } from "../helpers/testEnv";
 
 describe("toPublicConfig", () => {
-  it("returns exactly the 10 fields design.md section 5.2 specifies (5 original + minGeocodeQueryLength/geocodeDebounceMs per REV-006/REV-007 + responseTimeTargetSeconds per INC-7 + mapTileUrlTemplate/mapTileAttribution per INC-9), no more no less", () => {
+  it("returns exactly the 9 fields design.md section 5.2 specifies (5 original + minGeocodeQueryLength/geocodeDebounceMs per REV-006/REV-007 + responseTimeTargetSeconds per INC-7 + googleMapsJsApiKey per INC-10/FR-022, replacing INC-9's retired mapTileUrlTemplate/mapTileAttribution), no more no less", () => {
     const config = loadConfig(validPaidTierEnv("super-secret-password"));
     const publicConfig = toPublicConfig(config);
     expect(Object.keys(publicConfig).sort()).toEqual(
@@ -17,29 +17,36 @@ describe("toPublicConfig", () => {
         "minGeocodeQueryLength",
         "geocodeDebounceMs",
         "responseTimeTargetSeconds",
-        "mapTileUrlTemplate",
-        "mapTileAttribution",
+        "googleMapsJsApiKey",
       ].sort(),
     );
   });
 
-  it("configurability: reflects changed MAP_TILE_URL_TEMPLATE/MAP_TILE_ATTRIBUTION rather than fixed/null values (INC-9)", () => {
+  it("configurability: reflects a changed GOOGLE_MAPS_JS_API_KEY rather than a fixed/null value (INC-10, FR-022)", () => {
+    const config = loadConfig(
+      validPaidTierEnv("super-secret-password", { GOOGLE_MAPS_JS_API_KEY: "gmaps-js-key-xyz" }),
+    );
+    const publicConfig = toPublicConfig(config);
+    expect(publicConfig.googleMapsJsApiKey).toBe("gmaps-js-key-xyz");
+  });
+
+  it("googleMapsJsApiKey is null when unset, not a hardcoded default (INC-10)", () => {
+    const config = loadConfig(validPaidTierEnv("super-secret-password"));
+    const publicConfig = toPublicConfig(config);
+    expect(publicConfig.googleMapsJsApiKey).toBeNull();
+  });
+
+  it("googleMapsJsApiKey is the ONLY new client-exposed field introduced by INC-10 -- mapApiKey (the distinct server-side credential) is still never present on PublicConfig, per DEC-7's threat-model separation", () => {
     const config = loadConfig(
       validPaidTierEnv("super-secret-password", {
-        MAP_TILE_URL_TEMPLATE: "https://tiles.example.com/{z}/{x}/{y}.png",
-        MAP_TILE_ATTRIBUTION: "(c) Example Tiles",
+        MAP_API_KEY: "server-side-secret-key",
+        GOOGLE_MAPS_JS_API_KEY: "browser-exposed-key",
       }),
     );
     const publicConfig = toPublicConfig(config);
-    expect(publicConfig.mapTileUrlTemplate).toBe("https://tiles.example.com/{z}/{x}/{y}.png");
-    expect(publicConfig.mapTileAttribution).toBe("(c) Example Tiles");
-  });
-
-  it("mapTileUrlTemplate/mapTileAttribution are null when unset, not a hardcoded default (INC-9)", () => {
-    const config = loadConfig(validPaidTierEnv("super-secret-password"));
-    const publicConfig = toPublicConfig(config);
-    expect(publicConfig.mapTileUrlTemplate).toBeNull();
-    expect(publicConfig.mapTileAttribution).toBeNull();
+    expect(publicConfig).not.toHaveProperty("mapApiKey");
+    expect(JSON.stringify(publicConfig)).not.toContain("server-side-secret-key");
+    expect(publicConfig.googleMapsJsApiKey).toBe("browser-exposed-key");
   });
 
   it("configurability: reflects a changed MIN_GEOCODE_QUERY_LENGTH/GEOCODE_DEBOUNCE_MS rather than fixed values (REV-006/REV-007)", () => {
