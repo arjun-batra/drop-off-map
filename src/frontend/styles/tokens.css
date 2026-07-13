@@ -9,6 +9,14 @@
   --color-bg-page: #f7f8fa;
   --color-bg-surface: #ffffff;
   --color-bg-surface-raised: #f0f7ff;
+  /*
+   * color-bg-surface-sunken: added INC-12, ux-spec.md section 2.1 (new,
+   * 2026-07-12 modernization pass) -- resting background for
+   * collapsed/secondary content (a collapsed candidate card's summary
+   * strip), a touch darker than color-bg-surface so expanded/primary
+   * content reads as "lifted" above it.
+   */
+  --color-bg-surface-sunken: #fafbfc;
   --color-border-default: #d8dce1;
   --color-border-focus: var(--color-brand-primary);
   --color-text-primary: #1a1d21;
@@ -17,6 +25,15 @@
   --color-brand-primary: #1e6fd9;
   --color-brand-primary-hover: #175bb0;
   --color-on-brand-primary: #ffffff;
+  /*
+   * color-accent-transit / color-on-accent-transit: added INC-12, ux-spec.md
+   * section 2.1 (new, 2026-07-12 modernization pass) -- transit-specific
+   * icons, mode badges, and the line/direction pill on candidate cards
+   * (section 6.4), deliberately distinct from color-brand-primary so brand
+   * blue stays reserved for CTAs/links/"top pick" signaling.
+   */
+  --color-accent-transit: #00897b;
+  --color-on-accent-transit: #ffffff;
   --color-warning-bg: #fff8e6;
   --color-warning-border: #f0b429;
   --color-warning-text: #7a5b00;
@@ -54,9 +71,29 @@
 
   /* 2.5 Layout */
   --container-max-width: 480px;
+
+  /*
+   * 2.6 Iconography sizes -- added INC-12, ux-spec.md section 2.6 (new,
+   * 2026-07-12 modernization pass). icon-size-sm inline with
+   * type-body-small, icon-size-md inline with type-body/card row icons,
+   * icon-size-lg for section/journey-strip icons.
+   */
+  --icon-size-sm: 16px;
+  --icon-size-md: 20px;
+  --icon-size-lg: 24px;
 }
 
 /* 2.3 Type scale -- utility classes so components apply spec tokens by name */
+/*
+ * type-metric: added INC-12, ux-spec.md section 2.3 (new, 2026-07-12
+ * modernization pass) -- headline numeral on a candidate card (section
+ * 6.4's passenger-total-time figure).
+ */
+.type-metric {
+  font-size: 28px;
+  line-height: 32px;
+  font-weight: 700;
+}
 .type-h1 {
   font-size: 22px;
   line-height: 28px;
@@ -65,6 +102,17 @@
 .type-h2 {
   font-size: 18px;
   line-height: 24px;
+  font-weight: 600;
+}
+/*
+ * type-h3: added INC-12, ux-spec.md section 2.3 (new, 2026-07-12
+ * modernization pass) -- candidate-card subsection titles ("For the
+ * driver," "For your passenger"), sentence case, icon-led, replacing the
+ * all-caps type-label treatment those subsections previously used.
+ */
+.type-h3 {
+  font-size: 16px;
+  line-height: 22px;
   font-weight: 600;
 }
 .type-body {

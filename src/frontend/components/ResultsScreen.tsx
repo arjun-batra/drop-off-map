@@ -1,7 +1,9 @@
 import { useState } from "react";
+import type { KeyboardEvent } from "react";
 import type { PublicConfig } from "../../config/schema";
 import type { DropOffSearchCandidate, DropOffSearchRequest, DropOffSearchResponse } from "../../search/types";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { CarIcon, ChevronIcon, FlagIcon, TransitIcon, WalkIcon } from "./icons";
 import { MapView } from "./MapView";
 import "./ResultsScreen.css";
 
@@ -153,42 +155,153 @@ interface CandidateCardProps {
   highlighted?: boolean;
 }
 
+/**
+ * The redesigned itinerary-style candidate card -- ux-spec.md section 6.4
+ * (2026-07-12 redesign, FR-006/FR-010/FR-013/FR-021). Replaces the old flat
+ * "DRIVER"/"PASSENGER" label-value row list with a headline metric, a
+ * glanceable journey strip, and per-leg rows that name the actual boarding/
+ * arrival transit stop and line/direction (FR-021), present on every card
+ * -- not only rank 1 -- via this one shared component every rank renders.
+ *
+ * Expand/collapse (section 6.4): rank 1 (non-fallback) and the single
+ * fallback card are always expanded (`forcedExpanded`); ranks 2/3 default
+ * collapsed and toggle via tap/Enter/Space on the card's header region, a
+ * standard accessible disclosure widget (`aria-expanded`, keyboard-operable,
+ * per section 8's 2026-07-12 accessibility note).
+ */
 function CandidateCard({ candidate, isFallback, highlighted }: CandidateCardProps) {
   const isBest = candidate.rank === 1 && !isFallback;
+  const forcedExpanded = isBest || isFallback;
+  const [manuallyExpanded, setManuallyExpanded] = useState(false);
+  const expanded = forcedExpanded || manuallyExpanded;
+  // FR-021's own text / DEC-3: a walking-only candidate has no transit line
+  // at all, so boardingStop/arrivalStop are both undefined together --
+  // checking either defensively covers a (should-never-happen) partial
+  // response without rendering a half-populated line/direction row.
+  const isWalkingOnly = !candidate.boardingStop || !candidate.arrivalStop;
+  const waitPlusTransitMinutes = candidate.waitTimeMinutes + candidate.transitTimeMinutes;
+
+  function toggleExpanded() {
+    if (forcedExpanded) return;
+    setManuallyExpanded((prev) => !prev);
+  }
+
+  function handleToggleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (forcedExpanded) return;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      toggleExpanded();
+    }
+  }
 
   return (
     <article
       id={`results-screen-card-${candidate.rank}`}
       className={`results-screen__card ${isBest ? "results-screen__card--best" : ""} ${
         isFallback ? "results-screen__card--fallback" : ""
-      } ${highlighted ? "results-screen__card--flash" : ""}`}
+      } ${expanded ? "results-screen__card--expanded" : "results-screen__card--collapsed"} ${
+        highlighted ? "results-screen__card--flash" : ""
+      }`}
     >
-      <div className="results-screen__card-header">
-        <span
-          className={`type-label results-screen__rank-badge ${
-            isFallback ? "results-screen__rank-badge--fallback" : ""
-          }`}
-        >
-          {isFallback ? "CLOSEST OPTION" : `#${candidate.rank}`}
-        </span>
-        {isBest && <span className="type-label results-screen__best-label">BEST OPTION</span>}
+      <div
+        className="results-screen__card-toggle"
+        role={forcedExpanded ? undefined : "button"}
+        tabIndex={forcedExpanded ? undefined : 0}
+        aria-expanded={forcedExpanded ? undefined : expanded}
+        onClick={forcedExpanded ? undefined : toggleExpanded}
+        onKeyDown={forcedExpanded ? undefined : handleToggleKeyDown}
+      >
+        <div className="results-screen__card-header">
+          <span
+            className={`type-label results-screen__rank-badge ${
+              isFallback ? "results-screen__rank-badge--fallback" : ""
+            }`}
+          >
+            {isFallback ? "CLOSEST OPTION" : `#${candidate.rank}`}
+          </span>
+          {isBest && <span className="type-label results-screen__best-label">TOP PICK</span>}
+          {!forcedExpanded && (
+            <ChevronIcon expanded={expanded} size="sm" className="results-screen__chevron" />
+          )}
+        </div>
+
+        <h2 className="type-h2 results-screen__card-title">{candidate.label}</h2>
+
+        <div className="results-screen__headline">
+          <span
+            className={expanded ? "type-metric results-screen__headline-value" : "type-body-strong"}
+          >
+            {formatMinutes(candidate.passengerTotalTimeMinutes)}
+          </span>
+          <span className="type-caption results-screen__headline-caption">
+            {expanded ? "total for your passenger" : "total"}
+          </span>
+        </div>
+
+        <div className="results-screen__journey-strip">
+          <span className="results-screen__journey-step">
+            <WalkIcon size="lg" />
+            {expanded && <span className="type-body-small">{formatMinutes(candidate.walkTimeMinutes)}</span>}
+          </span>
+          {!isWalkingOnly && (
+            <span className="results-screen__journey-step results-screen__journey-step--transit">
+              <TransitIcon size="lg" />
+              {expanded && <span className="type-body-small">{formatMinutes(waitPlusTransitMinutes)}</span>}
+            </span>
+          )}
+          <span className="results-screen__journey-step">
+            <FlagIcon size="lg" />
+          </span>
+        </div>
       </div>
 
-      <h2 className="type-h2 results-screen__card-title">{candidate.label}</h2>
+      {expanded && (
+        <>
+          <div className="results-screen__section">
+            <p className="type-h3 results-screen__section-title">
+              <CarIcon size="md" /> For the driver
+            </p>
+            <Row label="Drive time" value={formatMinutes(candidate.driveTimeToDropoffMinutes)} />
+            <Row
+              label="Added detour"
+              value={`+${formatMinutes(candidate.detourMinutes)}`}
+              danger={candidate.exceedsThreshold}
+            />
+            <Row label="Driver's total trip" value={formatMinutes(candidate.driverTotalTimeMinutes)} />
+          </div>
 
-      <div className="results-screen__section">
-        <p className="type-label results-screen__section-title">Driver</p>
-        <Row label="Drive to drop-off" value={formatMinutes(candidate.driveTimeToDropoffMinutes)} />
-        <Row label="Added detour" value={`+${formatMinutes(candidate.detourMinutes)}`} danger={candidate.exceedsThreshold} />
-        <Row label="Your total trip" value={formatMinutes(candidate.driverTotalTimeMinutes)} />
-      </div>
-
-      <div className="results-screen__section">
-        <p className="type-label results-screen__section-title">Passenger</p>
-        <Row label="Walk to stop" value={formatMinutes(candidate.walkTimeMinutes)} />
-        <Row label="Wait + transit" value={formatMinutes(candidate.waitTimeMinutes + candidate.transitTimeMinutes)} />
-        <Row label="Total to destination" value={formatMinutes(candidate.passengerTotalTimeMinutes)} />
-      </div>
+          <div className="results-screen__section">
+            <p className="type-h3 results-screen__section-title">
+              <WalkIcon size="md" /> For your passenger
+            </p>
+            {isWalkingOnly ? (
+              <Row label="Walk to destination" value={formatMinutes(candidate.walkTimeMinutes)} />
+            ) : (
+              <>
+                <Row
+                  label={`Walk to ${candidate.boardingStop!.name}`}
+                  value={formatMinutes(candidate.walkTimeMinutes)}
+                />
+                <div className="results-screen__transit-row">
+                  <span className="results-screen__transit-pill">
+                    Board {candidate.boardingStop!.lineName} → {candidate.boardingStop!.headsign}
+                  </span>
+                  <div className="results-screen__transit-row-detail">
+                    <span className="type-caption results-screen__transit-caption">wait &amp; ride</span>
+                    <span className="type-body-strong">{formatMinutes(waitPlusTransitMinutes)}</span>
+                  </div>
+                </div>
+                <p className="type-body results-screen__waypoint">Arrive at {candidate.arrivalStop!.name}</p>
+              </>
+            )}
+            <Row
+              label="Total to destination"
+              value={formatMinutes(candidate.passengerTotalTimeMinutes)}
+              strong
+            />
+          </div>
+        </>
+      )}
     </article>
   );
 }
@@ -197,12 +310,14 @@ interface RowProps {
   label: string;
   value: string;
   danger?: boolean;
+  /** "Total to destination"/"Driver's total trip" summary rows -- type-body-strong label too, not just the value (ux-spec.md section 6.4 anatomy item 6). */
+  strong?: boolean;
 }
 
-function Row({ label, value, danger }: RowProps) {
+function Row({ label, value, danger, strong }: RowProps) {
   return (
     <div className="results-screen__row">
-      <span className="type-body results-screen__row-label">{label}</span>
+      <span className={`${strong ? "type-body-strong" : "type-body"} results-screen__row-label`}>{label}</span>
       <span className={`type-body-strong ${danger ? "results-screen__row-value--danger" : ""}`}>{value}</span>
     </div>
   );

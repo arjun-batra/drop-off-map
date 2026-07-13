@@ -1,11 +1,21 @@
 import type { LatLng } from "../geo/types.js";
 import { fetchWithTimeout, ProviderTimeoutError, type TimeoutAwareFetch } from "../http/fetchWithTimeout.js";
 import { RoutingProviderError } from "../routing/errors.js";
-import type { TransitEvaluationConfig, TransitEvaluator, TransitResult } from "./types.js";
+import type { TransitEvaluationConfig, TransitEvaluator, TransitResult, TransitStopDetail } from "./types.js";
 
 const GOOGLE_TRANSIT_DIRECTIONS_ENDPOINT = "https://maps.googleapis.com/maps/api/directions/json";
 
 type FetchLike = TimeoutAwareFetch;
+
+interface GoogleTransitStop {
+  name?: string;
+  location?: { lat: number; lng: number };
+}
+
+interface GoogleTransitLine {
+  name?: string;
+  short_name?: string;
+}
 
 interface GoogleTransitStep {
   travel_mode: string; // "WALKING" | "TRANSIT" (Google's transit-mode routes only ever contain these two)
@@ -13,6 +23,16 @@ interface GoogleTransitStep {
   transit_details?: {
     departure_time: { value: number };
     arrival_time: { value: number };
+    // (2026-07-13, FR-021/INC-12): confirmed present on every TRANSIT step's
+    // transit_details (design.md section 1.4/4.4a) -- previously fetched and
+    // discarded, now captured. All optional/defensively typed here since
+    // this is still hand-typed against Google's documented (not
+    // machine-verified in this sandbox, see docs/handoff.md's INC-12 section)
+    // response shape.
+    line?: GoogleTransitLine;
+    headsign?: string;
+    departure_stop?: GoogleTransitStop;
+    arrival_stop?: GoogleTransitStop;
   };
 }
 
@@ -66,6 +86,43 @@ function formatLatLng(point: LatLng): string {
 }
 
 /**
+ * FR-021 (INC-12): builds a `TransitStopDetail` from one TRANSIT step's
+ * `transit_details`, for either its `departure_stop` (boarding) or
+ * `arrival_stop` (arrival). Defensive, not a hard assumption: if the
+ * provider omits the stop's name or location on a given response (design.md
+ * section 1.4/4.4a confirms these fields are normally present, but this is a
+ * hand-typed shape never verified against a real live response in this
+ * sandbox -- see docs/handoff.md's INC-12 section), this returns `undefined`
+ * for that one stop rather than emitting a half-populated/misleading
+ * TransitStopDetail or failing the whole transit evaluation over one
+ * missing label -- same "fail open on cosmetic data" precedent as
+ * labelFinalCandidates.ts's reverse-geocode-failure fallback.
+ */
+function buildStopDetail(
+  step: GoogleTransitStep,
+  which: "departure_stop" | "arrival_stop",
+): TransitStopDetail | undefined {
+  const details = step.transit_details;
+  if (!details) return undefined;
+  const stop = details[which];
+  const name = stop?.name;
+  const location = stop?.location;
+  if (!name || typeof location?.lat !== "number" || typeof location?.lng !== "number") {
+    return undefined;
+  }
+  return {
+    name,
+    location: { lat: location.lat, lng: location.lng },
+    // FR-021b: prefer the short/route-number form (e.g. "506"), matching how
+    // Google's own consumer apps and ux-spec.md's example ("506 -> Downtown
+    // Loop") label a line, falling back to the full name when no short form
+    // exists.
+    lineName: details.line?.short_name ?? details.line?.name ?? "",
+    headsign: details.headsign ?? "",
+  };
+}
+
+/**
  * design.md section 4.4 step 10: filters the transit-mode call by
  * TRANSIT_MODES_INCLUDED. "all" (the config default) omits the
  * `transit_mode` parameter entirely, matching Google's own default of
@@ -109,16 +166,34 @@ function transitModeParam(config: TransitEvaluationConfig): string | undefined {
  * `walkTimeMinutes`/`passengerTotalTimeMinutes` already equal the route's
  * full walking duration -- the formulas below need no special-casing for
  * this, only the caller's decision of what `noTransitAvailable` to report.
+ *
+ * `boardingStop`/`arrivalStop` (FR-021, design.md section 4.4a): captured
+ * from the *first* TRANSIT step's `departure_stop`/`line`/`headsign` and
+ * the *last* TRANSIT step's `arrival_stop`/`line`/`headsign` respectively
+ * -- not an intermediate transfer stop -- alongside the existing numeric
+ * walk/wait/transit accumulation above, in the same single pass. Both
+ * `undefined` when `sawTransitStep` is false (walking-only, DEC-3), since
+ * there is no TRANSIT step to source them from.
  */
 export function parseTransitRoute(
   route: GoogleTransitRoute,
   requestedDepartureSeconds: number,
-): { walkTimeMinutes: number; waitTimeMinutes: number; transitTimeMinutes: number; passengerTotalTimeMinutes: number; sawTransitStep: boolean } {
+): {
+  walkTimeMinutes: number;
+  waitTimeMinutes: number;
+  transitTimeMinutes: number;
+  passengerTotalTimeMinutes: number;
+  sawTransitStep: boolean;
+  boardingStop?: TransitStopDetail;
+  arrivalStop?: TransitStopDetail;
+} {
   let clock = requestedDepartureSeconds;
   let walkSeconds = 0;
   let waitSeconds = 0;
   let transitSeconds = 0;
   let sawTransitStep = false;
+  let firstTransitStep: GoogleTransitStep | undefined;
+  let lastTransitStep: GoogleTransitStep | undefined;
 
   for (const leg of route.legs) {
     for (const step of leg.steps) {
@@ -127,6 +202,8 @@ export function parseTransitRoute(
         clock += step.duration.value;
       } else if (step.travel_mode === "TRANSIT" && step.transit_details) {
         sawTransitStep = true;
+        if (!firstTransitStep) firstTransitStep = step;
+        lastTransitStep = step;
         const departureSeconds = step.transit_details.departure_time.value;
         const arrivalSeconds = step.transit_details.arrival_time.value;
         waitSeconds += Math.max(0, departureSeconds - clock);
@@ -148,6 +225,8 @@ export function parseTransitRoute(
     transitTimeMinutes: transitSeconds / 60,
     passengerTotalTimeMinutes: (walkSeconds + waitSeconds + transitSeconds) / 60,
     sawTransitStep,
+    boardingStop: firstTransitStep ? buildStopDetail(firstTransitStep, "departure_stop") : undefined,
+    arrivalStop: lastTransitStep ? buildStopDetail(lastTransitStep, "arrival_stop") : undefined,
   };
 }
 
@@ -245,6 +324,12 @@ export function createGoogleTransitService(options: GoogleTransitServiceOptions)
         transitTimeMinutes: parsed.transitTimeMinutes,
         passengerTotalTimeMinutes: parsed.passengerTotalTimeMinutes,
         noTransitAvailable: false,
+        // FR-021 (INC-12): already undefined/undefined for a walking-only
+        // route by construction (parseTransitRoute only populates these from
+        // an actual TRANSIT step) -- no extra branching needed here beyond
+        // what parseTransitRoute already guarantees.
+        boardingStop: parsed.boardingStop,
+        arrivalStop: parsed.arrivalStop,
       };
     },
   };

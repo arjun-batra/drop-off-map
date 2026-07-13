@@ -2,6 +2,21 @@ import type { AppConfig } from "../config/schema.js";
 import type { LatLng } from "../geo/types.js";
 import type { EvaluatedCandidate } from "../candidates/detourEvaluator.js";
 
+/**
+ * FR-021a/b/c (design.md section 5.1/4.4a): the drop-off boarding stop or
+ * the passenger's destination arrival stop -- name/location as returned by
+ * the transit provider (FR-021a), the transit line/route name or number
+ * (FR-021b), and the direction-of-travel headsign (FR-021c). Confirmed
+ * present on Google's transit-mode Directions response's `transit_details`
+ * (design.md section 1.4/4.4a), not an assumption.
+ */
+export interface TransitStopDetail {
+  name: string;
+  location: LatLng;
+  lineName: string;
+  headsign: string;
+}
+
 /** Mirrors design.md section 5.1's `TransitResult`. */
 export interface TransitResult {
   walkTimeMinutes: number;
@@ -27,6 +42,22 @@ export interface TransitResult {
    * so it ranks normally alongside real-transit candidates.
    */
   noTransitAvailable: boolean;
+  /**
+   * FR-021 (INC-12, design.md section 4.4a): captured from the *first*
+   * TRANSIT step's `transit_details.departure_stop`/`line`/`headsign` -- the
+   * drop-off boarding stop. Undefined for a walking-only route (DEC-3, no
+   * TRANSIT steps at all) or a genuine `noTransitAvailable: true` result,
+   * per FR-021's own text that line/direction don't apply when no transit
+   * line exists.
+   */
+  boardingStop?: TransitStopDetail;
+  /**
+   * FR-021 (INC-12, design.md section 4.4a): captured from the *last*
+   * TRANSIT step's `transit_details.arrival_stop`/`line`/`headsign` -- the
+   * passenger's destination arrival/alighting stop. Same
+   * undefined-for-walking-only/no-transit rule as `boardingStop`.
+   */
+  arrivalStop?: TransitStopDetail;
 }
 
 export type TransitEvaluationConfig = Pick<AppConfig, "transitModesIncluded">;

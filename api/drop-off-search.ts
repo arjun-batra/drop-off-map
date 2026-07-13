@@ -231,6 +231,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       // per design.md's INC-5 "Covers" line.
       driverTotalTimeMinutes: candidate.driveTimeToCandidateMinutes + candidate.driveTimeFromCandidateMinutes,
       exceedsThreshold: !candidate.qualifies,
+      // FR-021 (INC-12): threaded straight through from FullyEvaluatedCandidate
+      // (src/transit/types.ts) -- undefined/undefined for a walking-only
+      // candidate (DEC-3), present for every candidate in this array, not
+      // only rank 1.
+      boardingStop: candidate.boardingStop,
+      arrivalStop: candidate.arrivalStop,
     }));
 
     if (ranked.status === "fallback") {

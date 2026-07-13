@@ -7,6 +7,8 @@
  * already had to fix once for MIN_QUERY_LENGTH/DEBOUNCE_MS).
  */
 
+import type { TransitStopDetail } from "../transit/types.js";
+
 export interface DropOffSearchLocation {
   lat: number;
   lng: number;
@@ -56,6 +58,15 @@ export interface DropOffSearchCandidate {
   driverTotalTimeMinutes: number;
   /** True when this candidate's detourMinutes exceeds the user's requested maxDetourMinutes (only possible on the single "fallback" candidate). */
   exceedsThreshold: boolean;
+  /**
+   * FR-021 (INC-12, design.md section 5.2): the drop-off boarding stop
+   * (name/location/line/direction) and the passenger's destination arrival
+   * stop, present for **every** candidate in the response (not only rank 1)
+   * -- both `undefined` for a walking-only candidate (DEC-3, FR-021's own
+   * text that line/direction don't apply when no transit line exists).
+   */
+  boardingStop?: TransitStopDetail;
+  arrivalStop?: TransitStopDetail;
 }
 
 /**
