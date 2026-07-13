@@ -46,39 +46,39 @@ export interface AppConfig {
    */
   sessionLifetimeSeconds: number;
   /**
-   * INC-9 (design.md section 3.1a/10): Leaflet tile-layer URL template for
-   * the optional map view (e.g. `https://{s}.example.com/{z}/{x}/{y}.png`,
-   * with any provider API key already embedded in the string by the
-   * operator if their chosen tile provider requires one). Deliberately not
-   * hardcoded to any single vendor -- see docs/handoff.md's INC-9 section
-   * for the tile-provider choice/rationale and how to switch providers by
-   * changing only this env var, no code change. Non-secret: this URL is
-   * requested directly by the browser (Leaflet has no server-side proxy),
-   * so it is exposed via PublicConfig the same way GEOGRAPHIC_CENTER is.
+   * INC-10 (FR-022, design.md section 7.2): loads Google's Maps JavaScript
+   * API client-side for the Results-screen map, replacing INC-9's Leaflet +
+   * `mapTileUrlTemplate`/`mapTileAttribution` implementation (both retired
+   * by this increment -- see design.md section 7.2's "Cleanup" note).
    *
-   * **Optional, `null` when unset** (same "conditionally present" pattern
-   * already used for `paidTierAccessPassword`) -- deliberately not a
-   * required-with-no-fallback key like this schema's other ~20 entries,
-   * because design.md section 10/1.3 frames the whole map view as a
-   * conditional/optional enhancement no FR/NFR depends on ("every FR/NFR is
-   * already satisfied by the text/card-based output of INC-1..8"). Requiring
-   * every existing/future deployment to configure a tile provider just to
-   * avoid a config-load failure would contradict that "optional" framing.
-   * When either this or `mapTileAttribution` is `null`, the frontend omits
-   * the map panel entirely (ux-spec.md section 6.7's own "fail silently,
-   * simply omit the panel" requirement) -- the same graceful-degradation
-   * behavior as a tile-load failure, just triggered by absent config instead
-   * of a network error.
+   * **Deliberately a distinct key from `mapApiKey`** (DEC-7, requirements.md
+   * section 5) -- this credential is loaded via a client-side script tag and
+   * is therefore necessarily visible to anyone who opens dev tools/views
+   * source. That is expected/normal for this specific Google product (Maps
+   * JS API keys are designed to be used client-side, restricted in Google
+   * Cloud Console via HTTP-referrer + "Maps JavaScript API only" scoping,
+   * an operator/runbook concern, not a code mechanism), but it is a
+   * materially different threat model from `mapApiKey`, which is called
+   * exclusively server-side and must never reach the browser. Reusing one
+   * key for both would mean a leaked/scraped browser key could call
+   * Directions/Distance Matrix/Geocoding directly, bypassing every cost
+   * control this app relies on (radius gating, APP_MODE, candidate-count
+   * limits, etc.) -- see design.md section 7.2 for the full rationale.
+   *
+   * **Intentionally included in `PublicConfig`** (unlike `mapApiKey`) --
+   * this is the first and only Google credential in this app designed to
+   * reach the browser; see design.md section 7.2's explicit note that this
+   * does not weaken the "provider calls happen server-side" architecture
+   * principle for every other Google API this app calls.
+   *
+   * **Optional, `null` when unset** -- same "conditionally present" pattern
+   * INC-9's tile config used: the frontend omits the map panel entirely
+   * (ux-spec.md section 6.7's "fail silently, simply omit the panel"
+   * requirement) rather than the config loader hard-failing, since designer/
+   * pm may still want the map view to degrade gracefully in an environment
+   * where this key hasn't been provisioned yet.
    */
-  mapTileUrlTemplate: string | null;
-  /**
-   * INC-9: attribution text/HTML required by OSM-family tile providers'
-   * license terms, rendered in Leaflet's built-in attribution control.
-   * Configurable (not hardcoded) because it must match whichever tile
-   * provider `mapTileUrlTemplate` points at. Optional/`null` for the same
-   * reason as `mapTileUrlTemplate` above.
-   */
-  mapTileAttribution: string | null;
+  googleMapsJsApiKey: string | null;
 }
 
 /**
@@ -103,8 +103,6 @@ export interface PublicConfig {
    * hardcoded threshold.
    */
   responseTimeTargetSeconds: number;
-  /** INC-9: see AppConfig's field of the same name -- needed client-side so Leaflet can request tiles directly. Optional/`null` when the map view isn't configured. */
-  mapTileUrlTemplate: string | null;
-  /** INC-9: see AppConfig's field of the same name. Optional/`null` when the map view isn't configured. */
-  mapTileAttribution: string | null;
+  /** INC-10: see AppConfig's field of the same name -- intentionally exposed here (DEC-7/design.md section 7.2). Optional/`null` when the map view isn't configured. */
+  googleMapsJsApiKey: string | null;
 }

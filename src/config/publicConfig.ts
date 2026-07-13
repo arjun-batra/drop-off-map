@@ -15,7 +15,6 @@ export function toPublicConfig(config: AppConfig): PublicConfig {
     minGeocodeQueryLength: config.minGeocodeQueryLength,
     geocodeDebounceMs: config.geocodeDebounceMs,
     responseTimeTargetSeconds: config.responseTimeTargetSeconds,
-    mapTileUrlTemplate: config.mapTileUrlTemplate,
-    mapTileAttribution: config.mapTileAttribution,
+    googleMapsJsApiKey: config.googleMapsJsApiKey,
   };
 }

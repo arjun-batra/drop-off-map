@@ -11,8 +11,8 @@ interface ResultsScreenProps {
   onEditSearch: () => void;
   /** Re-issues the identical search (design.md section 6.3/8's "timeout" status -- "message distinct from the above, inviting retry"). */
   onTryAgain: () => void;
-  /** INC-9: only the tile-provider settings the map panel needs, not the full PublicConfig. */
-  mapConfig: Pick<PublicConfig, "mapTileUrlTemplate" | "mapTileAttribution">;
+  /** INC-10: only the Google Maps JS API key the map panel needs, not the full PublicConfig. */
+  mapConfig: Pick<PublicConfig, "googleMapsJsApiKey">;
 }
 
 function formatMinutes(value: number): string {
@@ -62,17 +62,16 @@ export function ResultsScreen({ response, request, onEditSearch, onTryAgain, map
 
   // ux-spec.md section 6.7: the map panel is omitted gracefully (not shown
   // broken/empty) on every message-only status -- there is nothing to plot --
-  // and also when the operator hasn't configured a tile provider at all
-  // (config/schema.ts's `mapTileUrlTemplate`/`mapTileAttribution` are
-  // optional, `null` when unset -- this is the "map view disabled" case, not
-  // an error). `response.route` is also only present when
-  // candidates.length > 0 (see search/types.ts), so checking all three is
-  // belt-and-suspenders against a malformed/partial response.
+  // and also when the operator hasn't configured `GOOGLE_MAPS_JS_API_KEY` at
+  // all (config/schema.ts's `googleMapsJsApiKey` is optional, `null` when
+  // unset -- this is the "map view disabled" case, not an error).
+  // `response.route` is also only present when candidates.length > 0 (see
+  // search/types.ts), so checking both is belt-and-suspenders against a
+  // malformed/partial response.
   const showMap =
     (response.status === "ranked" || response.status === "fallback") &&
     !!response.route &&
-    !!mapConfig.mapTileUrlTemplate &&
-    !!mapConfig.mapTileAttribution;
+    !!mapConfig.googleMapsJsApiKey;
 
   function handleSelectCandidate(rank: number) {
     setHighlightedRank(rank);
@@ -104,20 +103,22 @@ export function ResultsScreen({ response, request, onEditSearch, onTryAgain, map
           </div>
         )}
 
-        {showMap && response.route && mapConfig.mapTileUrlTemplate && mapConfig.mapTileAttribution && (
-          // ux-spec.md section 6.7's own "if the map tile/script fails to
-          // load, fail silently and simply omit the panel" requirement,
+        {showMap && response.route && mapConfig.googleMapsJsApiKey && (
+          // ux-spec.md section 6.7's own "if the map script fails to load,
+          // fail silently and simply omit the panel" requirement,
           // structurally enforced the same way REV-012 already enforces it
           // for the disclaimer -- an ErrorBoundary around only the map, with
-          // a `null` fallback, so a Leaflet init failure can never take the
-          // cards (or anything else on this screen) down with it.
+          // a `null` fallback, so a Maps JavaScript API init failure can
+          // never take the cards (or anything else on this screen) down
+          // with it. (MapView.tsx additionally guards its own async script-
+          // load promise, since an ErrorBoundary alone cannot catch a
+          // rejected Promise -- see that file's doc comment.)
           <ErrorBoundary fallback={null}>
             <MapView
               route={response.route}
               candidates={response.candidates.map((candidate) => ({ rank: candidate.rank, location: candidate.location }))}
               variant={response.status === "fallback" ? "fallback" : "ranked"}
-              tileUrlTemplate={mapConfig.mapTileUrlTemplate}
-              tileAttribution={mapConfig.mapTileAttribution}
+              apiKey={mapConfig.googleMapsJsApiKey}
               highlightedRank={highlightedRank}
               onSelectCandidate={handleSelectCandidate}
             />

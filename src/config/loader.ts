@@ -119,9 +119,9 @@ function parsePaidTierAccessPassword(env: Env, appMode: AppMode, problems: strin
 }
 
 /**
- * INC-9: deliberately optional (`null` when unset), unlike this file's other
- * ~20 keys -- see schema.ts's doc comment on `mapTileUrlTemplate` for why.
- * No `problems.push` here on either branch; an unset value is a valid,
+ * Deliberately optional (`null` when unset), unlike this file's other ~20
+ * keys -- see schema.ts's doc comment on `googleMapsJsApiKey` for why. No
+ * `problems.push` here on either branch; an unset value is a valid,
  * supported "map view disabled" configuration, not a misconfiguration.
  */
 function parseOptionalString(env: Env, key: string): string | null {
@@ -165,8 +165,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
   const geocodeDebounceMs = parsePositiveNumber(env, "GEOCODE_DEBOUNCE_MS", problems, true);
   const sessionLifetimeSeconds = parsePositiveNumber(env, "SESSION_LIFETIME_SECONDS", problems, true);
   const paidTierAccessPassword = parsePaidTierAccessPassword(env, appMode, problems);
-  const mapTileUrlTemplate = parseOptionalString(env, "MAP_TILE_URL_TEMPLATE");
-  const mapTileAttribution = parseOptionalString(env, "MAP_TILE_ATTRIBUTION");
+  const googleMapsJsApiKey = parseOptionalString(env, "GOOGLE_MAPS_JS_API_KEY");
 
   if (problems.length > 0) {
     throw new ConfigError(problems);
@@ -191,7 +190,6 @@ export function loadConfig(env: Env = process.env): AppConfig {
     minGeocodeQueryLength,
     geocodeDebounceMs,
     sessionLifetimeSeconds,
-    mapTileUrlTemplate,
-    mapTileAttribution,
+    googleMapsJsApiKey,
   };
 }

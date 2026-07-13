@@ -30,6 +30,12 @@ export default [
       globals: {
         ...globals.browser,
         ...globals.node,
+        // Ambient global injected by Google's Maps JavaScript API script tag
+        // at runtime (INC-10, FR-022) -- only ever referenced in type
+        // positions here (e.g. `typeof google.maps.Size`), backed by the
+        // @types/google.maps package (tsconfig.json's "types" array), not a
+        // real module import ESLint/no-undef would otherwise recognize.
+        google: "readonly",
       },
     },
     plugins: {

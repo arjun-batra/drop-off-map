@@ -1,6 +1,6 @@
-import L from "leaflet";
-import "leaflet/dist/leaflet.css";
-import { useEffect, useRef } from "react";
+import { importLibrary, setOptions } from "@googlemaps/js-api-loader";
+import { useEffect, useRef, useState } from "react";
+import { MUTED_MAP_STYLE } from "./mapStyle";
 import "./MapView.css";
 
 export interface MapViewCandidate {
@@ -13,119 +13,241 @@ interface MapViewProps {
   candidates: MapViewCandidate[];
   /** ux-spec.md section 6.7: fallback candidates get the warning-colored marker, not the rank-1/neutral treatment. */
   variant: "ranked" | "fallback";
-  tileUrlTemplate: string;
-  tileAttribution: string;
+  /**
+   * FR-022 / design.md section 7.2: `GOOGLE_MAPS_JS_API_KEY`, a distinct,
+   * intentionally browser-exposed credential from the server-side
+   * `MAP_API_KEY`. Never used for anything but loading this widget.
+   */
+  apiKey: string;
   highlightedRank: number | null;
   onSelectCandidate: (rank: number) => void;
 }
 
-function markerClass(rank: number, variant: "ranked" | "fallback"): string {
-  if (variant === "fallback") return "map-view__marker--fallback";
-  return rank === 1 ? "map-view__marker--rank-1" : "map-view__marker--rank-other";
+const MARKER_SIZE = 32;
+const MARKER_RADIUS = 14;
+const MARKER_CENTER = MARKER_SIZE / 2;
+
+/**
+ * Reads a color token from tokens.css (docs/ux-spec.md section 2) at
+ * runtime, so this component's markers stay in lockstep with the same
+ * palette every other component references by CSS variable -- an SVG data-
+ * URI marker icon can't apply a CSS class the way the old Leaflet divIcon
+ * did, so reading the computed custom property is the equivalent mechanism
+ * for "reference tokens, not inline literals" here. The literal fallback is
+ * only a defensive guard for an environment where tokens.css genuinely isn't
+ * loaded (e.g. a test harness) -- it is never reached in the running app,
+ * and is not a configurable/tunable value.
+ */
+function readColorToken(name: string, fallback: string): string {
+  if (typeof document === "undefined") return fallback;
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || fallback;
 }
 
-function buildDivIcon(rank: number, variant: "ranked" | "fallback", highlighted: boolean): L.DivIcon {
-  const highlightClass = highlighted ? "map-view__marker--highlighted" : "";
-  return L.divIcon({
-    className: "map-view__marker-wrap",
-    html: `<div class="map-view__marker ${markerClass(rank, variant)} ${highlightClass}">${variant === "fallback" ? "!" : `#${rank}`}</div>`,
-    iconSize: [32, 32],
-    iconAnchor: [16, 16],
-  });
+function markerColors(variant: "ranked" | "fallback", rank: number): { fill: string; text: string } {
+  if (variant === "fallback") {
+    return {
+      fill: readColorToken("--color-warning-border", "#f0b429"),
+      text: readColorToken("--color-text-primary", "#1a1d21"),
+    };
+  }
+  if (rank === 1) {
+    return {
+      fill: readColorToken("--color-brand-primary", "#1e6fd9"),
+      text: readColorToken("--color-on-brand-primary", "#ffffff"),
+    };
+  }
+  return {
+    fill: readColorToken("--color-text-secondary", "#5b6470"),
+    text: readColorToken("--color-on-brand-primary", "#ffffff"),
+  };
 }
 
 /**
- * ux-spec.md section 6.7 -- the optional Results-screen map panel. Renders
- * the driver's route polyline + one pin per candidate using data already
- * present on `DropOffSearchResponse` (INC-3's decoded route polyline, INC-6's
- * ranked/fallback candidate points) -- no provider call of any kind
- * originates from this component. Tiles come from `tileUrlTemplate`
- * (design.md section 3.1a/10: a free-tier, non-Google, non-raw-OSM-demo-
- * server tile provider -- see docs/handoff.md's INC-9 section for which one
- * and why), never Google's Maps JavaScript API.
- *
- * Display-only for v1 (ux-spec.md section 6.7): no pan/zoom-driven
- * re-querying, no draggable pins, no recenter control beyond Leaflet's own
- * default zoom buttons. Tapping a pin reports `onSelectCandidate(rank)` so
- * the parent (ResultsScreen) can scroll/flash the matching card; tapping a
- * card does not re-center the map, per spec.
- *
- * Rendered by ResultsScreen inside an ErrorBoundary (SearchFlow.tsx's
- * existing pattern) so a Leaflet init failure can only take down this panel,
- * never the disclaimer or the text-based cards below it -- ux-spec.md
- * section 6.7's "fail silently, omit the panel" requirement.
+ * ux-spec.md section 6.7 (2026-07-12): "Custom-colored markers, not default
+ * red Google pins" -- builds a small colored-circle SVG (rank number, or "!"
+ * for the fallback state) as a data-URI `google.maps.Icon`, matching the
+ * same rank-1/rank-other/fallback color coding the candidate cards already
+ * use (see ResultsScreen.css), plus a focus-ring-colored halo when this
+ * marker is the tap-highlighted one.
  */
-export function MapView({
-  route,
-  candidates,
-  variant,
-  tileUrlTemplate,
-  tileAttribution,
-  highlightedRank,
-  onSelectCandidate,
-}: MapViewProps) {
+function buildMarkerIcon(
+  rank: number,
+  variant: "ranked" | "fallback",
+  highlighted: boolean,
+  SizeCtor: typeof google.maps.Size,
+  PointCtor: typeof google.maps.Point,
+): google.maps.Icon {
+  const { fill, text } = markerColors(variant, rank);
+  const strokeColor = readColorToken("--color-bg-surface", "#ffffff");
+  const label = variant === "fallback" ? "!" : `#${rank}`;
+  const ring = highlighted
+    ? `<circle cx="${MARKER_CENTER}" cy="${MARKER_CENTER}" r="${MARKER_RADIUS + 3}" fill="none" stroke="${readColorToken(
+        "--color-focus-ring",
+        "rgba(30, 111, 217, 0.4)",
+      )}" stroke-width="3" />`
+    : "";
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${MARKER_SIZE}" height="${MARKER_SIZE}" viewBox="0 0 ${MARKER_SIZE} ${MARKER_SIZE}">` +
+    ring +
+    `<circle cx="${MARKER_CENTER}" cy="${MARKER_CENTER}" r="${MARKER_RADIUS}" fill="${fill}" stroke="${strokeColor}" stroke-width="2" />` +
+    `<text x="${MARKER_CENTER}" y="${MARKER_CENTER}" text-anchor="middle" dominant-baseline="central" font-family="system-ui, sans-serif" font-size="11" font-weight="700" fill="${text}">${label}</text>` +
+    `</svg>`;
+
+  return {
+    url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
+    scaledSize: new SizeCtor(MARKER_SIZE, MARKER_SIZE),
+    anchor: new PointCtor(MARKER_CENTER, MARKER_CENTER),
+  };
+}
+
+/**
+ * ux-spec.md section 6.7 -- the Results-screen map panel, INC-10 (FR-022):
+ * renders via Google's Maps JavaScript API (Dynamic Maps), replacing INC-9's
+ * Leaflet + non-Google-tile implementation. Same functional contract as
+ * before (design.md section 10, INC-10): route polyline + one pin per
+ * candidate, tap-to-highlight, display-only for v1, using data already
+ * present on `DropOffSearchResponse` (INC-3's route polyline, INC-6's
+ * ranked/fallback candidates) -- this component makes no Directions/Distance
+ * Matrix/Geocoding call of its own, only the one Maps JavaScript API load.
+ *
+ * Loaded via `@googlemaps/js-api-loader`'s functional API
+ * (`setOptions`/`importLibrary`), not a hand-rolled `<script>` tag: the
+ * library de-dupes the actual script/library load across every mount of
+ * this component (e.g. re-running a search remounts this component), so
+ * multiple `MapView` instances over a session never race to inject the
+ * script twice or double-fire `google.maps` initialization.
+ *
+ * ux-spec.md section 6.7's "Default Google UI chrome is hidden except zoom
+ * control" and "muted map style" decisions are implemented via `MapOptions`
+ * (`disableDefaultUI` + `zoomControl` + `styles`) below -- both are plain
+ * parameters on the same API load already required for FR-022, not a second
+ * provider call or added cost.
+ *
+ * The Maps JavaScript API load is asynchronous (unlike Leaflet, which is
+ * bundled and synchronous), so a load failure is a Promise rejection, not a
+ * thrown render/effect error -- an `ErrorBoundary` alone (as used by
+ * ResultsScreen.tsx, matching the INC-9/REV-012 "fail silently, isolate the
+ * blast radius" pattern) cannot catch that. This component therefore also
+ * catches the load promise itself and renders nothing on failure, so
+ * ux-spec.md section 6.7's "if the map script fails to load, fail silently
+ * and simply omit the panel" requirement holds for this async path too, not
+ * only for synchronous rendering errors (which the ErrorBoundary still
+ * covers as a second, independent layer of the same resilience pattern).
+ */
+export function MapView({ route, candidates, variant, apiKey, highlightedRank, onSelectCandidate }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const mapRef = useRef<L.Map | null>(null);
-  const markersRef = useRef<Map<number, L.Marker>>(new Map());
+  const mapRef = useRef<google.maps.Map | null>(null);
+  const polylineRef = useRef<google.maps.Polyline | null>(null);
+  const markersRef = useRef<Map<number, google.maps.Marker>>(new Map());
+  const listenersRef = useRef<google.maps.MapsEventListener[]>([]);
+  const iconCtorsRef = useRef<{ Size: typeof google.maps.Size; Point: typeof google.maps.Point } | null>(null);
+  const variantRef = useRef(variant);
+  variantRef.current = variant;
   const onSelectCandidateRef = useRef(onSelectCandidate);
   onSelectCandidateRef.current = onSelectCandidate;
 
+  const [loadFailed, setLoadFailed] = useState(false);
+
   useEffect(() => {
-    if (!containerRef.current) return;
-
-    const map = L.map(containerRef.current, {
-      attributionControl: true,
-      zoomControl: true,
-    });
-    mapRef.current = map;
-
-    L.tileLayer(tileUrlTemplate, { attribution: tileAttribution, maxZoom: 19 }).addTo(map);
-
-    const routeLatLngs = route.map((point): L.LatLngTuple => [point.lat, point.lng]);
-    const bounds: L.LatLngBoundsExpression = [];
-
-    if (routeLatLngs.length > 1) {
-      L.polyline(routeLatLngs, { className: "map-view__route", weight: 4 }).addTo(map);
-      bounds.push(...routeLatLngs);
-    }
-
+    let cancelled = false;
+    // Captured once, synchronously, so the cleanup below reads a stable
+    // reference rather than `.current` at cleanup time (both are the same
+    // Map/array instance throughout this effect's lifetime -- neither ref
+    // is ever reassigned, only mutated in place -- but capturing them
+    // locally is the fix react-hooks/exhaustive-deps itself recommends for
+    // reading a ref inside a cleanup closure).
     const markers = markersRef.current;
-    markers.clear();
-    for (const candidate of candidates) {
-      const latLng: L.LatLngTuple = [candidate.location.lat, candidate.location.lng];
-      const marker = L.marker(latLng, {
-        icon: buildDivIcon(candidate.rank, variant, candidate.rank === highlightedRank),
-      }).addTo(map);
-      marker.on("click", () => onSelectCandidateRef.current(candidate.rank));
-      markers.set(candidate.rank, marker);
-      bounds.push(latLng);
+    const listeners = listenersRef.current;
+
+    async function init() {
+      try {
+        setOptions({ key: apiKey, v: "weekly" });
+        const [{ Map: GoogleMap, Polyline }, { Marker }, { LatLngBounds, Size, Point }] = await Promise.all([
+          importLibrary("maps"),
+          importLibrary("marker"),
+          importLibrary("core"),
+        ]);
+
+        if (cancelled || !containerRef.current) return;
+        iconCtorsRef.current = { Size, Point };
+
+        const map = new GoogleMap(containerRef.current, {
+          disableDefaultUI: true,
+          zoomControl: true,
+          styles: MUTED_MAP_STYLE,
+        });
+        mapRef.current = map;
+
+        const bounds = new LatLngBounds();
+        let hasBoundsPoint = false;
+
+        if (route.length > 1) {
+          polylineRef.current = new Polyline({
+            path: route,
+            strokeColor: readColorToken("--color-brand-primary", "#1e6fd9"),
+            strokeWeight: 4,
+            map,
+          });
+          for (const point of route) {
+            bounds.extend(point);
+            hasBoundsPoint = true;
+          }
+        }
+
+        markers.clear();
+        for (const candidate of candidates) {
+          const marker = new Marker({
+            position: candidate.location,
+            map,
+            icon: buildMarkerIcon(candidate.rank, variantRef.current, candidate.rank === highlightedRank, Size, Point),
+          });
+          listeners.push(marker.addListener("click", () => onSelectCandidateRef.current(candidate.rank)));
+          markers.set(candidate.rank, marker);
+          bounds.extend(candidate.location);
+          hasBoundsPoint = true;
+        }
+
+        if (hasBoundsPoint) {
+          map.fitBounds(bounds, 24);
+        } else {
+          map.setCenter({ lat: 0, lng: 0 });
+          map.setZoom(2);
+        }
+      } catch (err) {
+        console.error("[MapView] failed to load Google Maps JavaScript API:", err);
+        if (!cancelled) setLoadFailed(true);
+      }
     }
 
-    if (bounds.length > 0) {
-      map.fitBounds(bounds, { padding: [24, 24] });
-    } else {
-      map.setView([0, 0], 2);
-    }
+    init();
 
     return () => {
-      map.remove();
-      mapRef.current = null;
+      cancelled = true;
+      for (const listener of listeners) listener.remove();
+      listeners.length = 0;
+      for (const marker of markers.values()) marker.setMap(null);
       markers.clear();
+      polylineRef.current?.setMap(null);
+      polylineRef.current = null;
+      mapRef.current = null;
     };
-    // Route/candidates/variant/tile settings only ever change together, on a
+    // Route/candidates/variant/apiKey only ever change together, on a
     // brand-new search result -- re-running the full init on any of them
     // changing is correct and matches ResultsScreen remounting this
-    // component per search (see ResultsScreen.tsx's `key` usage).
+    // component per search, same rationale as INC-9's original comment here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
+    const ctors = iconCtorsRef.current;
+    if (!ctors) return;
     for (const [rank, marker] of markersRef.current) {
-      const wrapperElement = marker.getElement();
-      const markerElement = wrapperElement?.querySelector(".map-view__marker");
-      markerElement?.classList.toggle("map-view__marker--highlighted", rank === highlightedRank);
+      marker.setIcon(buildMarkerIcon(rank, variantRef.current, rank === highlightedRank, ctors.Size, ctors.Point));
     }
   }, [highlightedRank]);
+
+  if (loadFailed) return null;
 
   return <div ref={containerRef} className="map-view" role="img" aria-label="Map of the driving route and candidate drop-off points" />;
 }

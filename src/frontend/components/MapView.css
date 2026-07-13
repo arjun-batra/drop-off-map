@@ -1,62 +1,22 @@
 /*
  * ux-spec.md section 6.7: "roughly 200-240px tall on mobile", full-width,
- * space-lg margin above/below. Colors reference docs/ux-spec.md section 2's
- * tokens (tokens.css), never inline literals, per that section's explicit
- * instruction.
+ * `radius-lg` + `shadow-lg` -- the map is one of this screen's two
+ * "elevated/primary" surfaces (2026-07-12 update, alongside card #1), so it
+ * gets the same treatment as that card. Colors reference docs/ux-spec.md
+ * section 2's tokens (tokens.css), never inline literals.
+ *
+ * INC-10 (FR-022): marker styling itself no longer lives here -- Google
+ * Maps JavaScript API markers are plain image icons (SVG data URIs built at
+ * runtime in MapView.tsx, reading these same color tokens via
+ * getComputedStyle), not DOM elements this stylesheet can target the way
+ * Leaflet's `divIcon` markers were. Only the panel container is styled here.
  */
 .map-view {
   width: 100%;
   height: 220px;
   margin: var(--space-lg) 0;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   overflow: hidden;
   background: var(--color-bg-surface);
-}
-
-/* Leaflet's own attribution control should still read at the card's type
-   scale rather than the browser default. */
-.map-view .leaflet-control-attribution {
-  font-size: 10px;
-}
-
-.map-view__marker-wrap {
-  background: transparent;
-  border: none;
-}
-
-.map-view__marker {
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-full);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-on-brand-primary);
-  font-size: 11px;
-  font-weight: 700;
-  box-shadow: var(--shadow-sm);
-  border: 2px solid var(--color-bg-surface);
-}
-
-/* Rank-1 uses the same brand-primary accent as the card's "BEST OPTION"
-   highlight (ux-spec.md section 6.4/6.7), so the map and cards share one
-   visual vocabulary for the top pick. */
-.map-view__marker--rank-1 {
-  background: var(--color-brand-primary);
-}
-
-/* Ranks 2-3: neutral marker color, per ux-spec.md section 6.7. */
-.map-view__marker--rank-other {
-  background: var(--color-text-secondary);
-}
-
-/* Fallback state's single candidate: warning-colored, matching the card's
-   "CLOSEST OPTION" badge (ux-spec.md section 6.5/6.7). */
-.map-view__marker--fallback {
-  background: var(--color-warning-border);
-  color: var(--color-text-primary);
-}
-
-.map-view__marker--highlighted {
-  box-shadow: 0 0 0 3px var(--color-focus-ring);
+  box-shadow: var(--shadow-lg);
 }
