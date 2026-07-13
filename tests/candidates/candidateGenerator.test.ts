@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CandidateGenerator, type CandidateSamplingConfig } from "../../src/candidates/candidateGenerator";
 import { haversineDistanceKm } from "../../src/geo/radiusValidator";
 import type { LatLng } from "../../src/geo/types";
+import type { DirectionStep } from "../../src/routing/types";
 
 // Includes `label` so this same constant can double as both a plain LatLng
 // (e.g. polyline vertices) and a GeoPoint (CandidateSamplingConfig's
@@ -34,13 +35,13 @@ function baseConfig(overrides: Partial<CandidateSamplingConfig> = {}): Candidate
 describe("CandidateGenerator.sampleAlongPolyline -- FR-005, design.md section 4.2", () => {
   describe("edge cases", () => {
     it("returns [] for a polyline with fewer than 2 points", () => {
-      expect(CandidateGenerator.sampleAlongPolyline([], baseConfig())).toEqual([]);
-      expect(CandidateGenerator.sampleAlongPolyline([TORONTO], baseConfig())).toEqual([]);
+      expect(CandidateGenerator.sampleAlongPolyline([], [], baseConfig())).toEqual([]);
+      expect(CandidateGenerator.sampleAlongPolyline([TORONTO], [], baseConfig())).toEqual([]);
     });
 
     it("returns [] for a zero-length route (duplicate start/end point)", () => {
       const polyline = [TORONTO, { ...TORONTO }];
-      expect(CandidateGenerator.sampleAlongPolyline(polyline, baseConfig())).toEqual([]);
+      expect(CandidateGenerator.sampleAlongPolyline(polyline, [], baseConfig())).toEqual([]);
     });
   });
 
@@ -53,7 +54,7 @@ describe("CandidateGenerator.sampleAlongPolyline -- FR-005, design.md section 4.
       const polyline = [TORONTO, end];
       const config = baseConfig({ candidateSpacingMeters: 1000, maxRawCandidatesSampled: 20 });
 
-      const candidates = CandidateGenerator.sampleAlongPolyline(polyline, config);
+      const candidates = CandidateGenerator.sampleAlongPolyline(polyline, [], config);
 
       // targetDistance = 1000*(i+1) for i=0..8 (9000m <= 9500m); i=9 -> 10000m > 9500m, stopped.
       expect(candidates).toHaveLength(9);
@@ -71,8 +72,8 @@ describe("CandidateGenerator.sampleAlongPolyline -- FR-005, design.md section 4.
       const end = northOf(TORONTO, 9.5);
       const polyline = [TORONTO, end];
 
-      const narrow = CandidateGenerator.sampleAlongPolyline(polyline, baseConfig({ candidateSpacingMeters: 1000 }));
-      const wide = CandidateGenerator.sampleAlongPolyline(polyline, baseConfig({ candidateSpacingMeters: 2000 }));
+      const narrow = CandidateGenerator.sampleAlongPolyline(polyline, [], baseConfig({ candidateSpacingMeters: 1000 }));
+      const wide = CandidateGenerator.sampleAlongPolyline(polyline, [], baseConfig({ candidateSpacingMeters: 2000 }));
 
       expect(narrow).toHaveLength(9);
       expect(wide).toHaveLength(4); // targetDistance = 2000*(i+1), i=0..3 (8000<=9500), i=4 -> 10000>9500
@@ -92,7 +93,7 @@ describe("CandidateGenerator.sampleAlongPolyline -- FR-005, design.md section 4.
       // in its own describe block below).
       const config = baseConfig({ candidateSpacingMeters: 1000, maxRawCandidatesSampled: 20, geographicRadiusKm: 10000 });
 
-      const candidates = CandidateGenerator.sampleAlongPolyline(polyline, config);
+      const candidates = CandidateGenerator.sampleAlongPolyline(polyline, [], config);
 
       expect(candidates.length).toBeLessThanOrEqual(20);
       // Not degenerately small either -- confirms the cap is actually being hit,
@@ -118,10 +119,12 @@ describe("CandidateGenerator.sampleAlongPolyline -- FR-005, design.md section 4.
 
       const cappedAt20 = CandidateGenerator.sampleAlongPolyline(
         polyline,
+        [],
         baseConfig({ candidateSpacingMeters: 1000, maxRawCandidatesSampled: 20, geographicRadiusKm: 10000 }),
       );
       const cappedAt40 = CandidateGenerator.sampleAlongPolyline(
         polyline,
+        [],
         baseConfig({ candidateSpacingMeters: 1000, maxRawCandidatesSampled: 40, geographicRadiusKm: 10000 }),
       );
 
@@ -144,7 +147,7 @@ describe("CandidateGenerator.sampleAlongPolyline -- FR-005, design.md section 4.
         geographicRadiusKm: 10000,
       });
 
-      const candidates = CandidateGenerator.sampleAlongPolyline(polyline, config);
+      const candidates = CandidateGenerator.sampleAlongPolyline(polyline, [], config);
 
       // Documented, accepted behavior per handoff.md: 19 or 20, never fewer
       // than 19 and never more than the cap. Not asserting an exact count here
@@ -172,7 +175,7 @@ describe("CandidateGenerator.sampleAlongPolyline -- FR-005, design.md section 4.
         geographicRadiusKm: 50,
       });
 
-      const candidates = CandidateGenerator.sampleAlongPolyline(polyline, config);
+      const candidates = CandidateGenerator.sampleAlongPolyline(polyline, [], config);
 
       // Cumulative route length = 210km. targetDistance = 25*(i+1) km for
       // i=0..7 (200<=210); i=8 -> 225>210, stop. 8 raw samples before filtering,
@@ -216,12 +219,102 @@ describe("CandidateGenerator.sampleAlongPolyline -- FR-005, design.md section 4.
         geographicRadiusKm: 200,
       });
 
-      const narrow = CandidateGenerator.sampleAlongPolyline(polyline, narrowConfig);
-      const wide = CandidateGenerator.sampleAlongPolyline(polyline, wideConfig);
+      const narrow = CandidateGenerator.sampleAlongPolyline(polyline, [], narrowConfig);
+      const wide = CandidateGenerator.sampleAlongPolyline(polyline, [], wideConfig);
 
       expect(narrow.length).toBeLessThan(wide.length);
       // At radius=200km, every sample along this route (max 105km from center) survives.
       expect(wide).toHaveLength(8);
+    });
+  });
+
+  describe("FR-020 highway exclusion (design.md section 4.2a, DEC-6)", () => {
+    // 9.5km route, spacing=1000m, cap=20 -> 9 raw samples at 1000,2000,...,9000m
+    // (see the "spacing-dominated sampling" describe block above for the same
+    // baseline route/count without any steps).
+    const end = northOf(TORONTO, 9.5);
+    const polyline = [TORONTO, end];
+    const config = baseConfig({ candidateSpacingMeters: 1000, maxRawCandidatesSampled: 20 });
+
+    function step(instructionsHtml: string, cumulativeDistanceMeters: number): DirectionStep {
+      return { instructionsHtml, distanceMeters: cumulativeDistanceMeters, cumulativeDistanceMeters };
+    }
+
+    it("empty steps list fails open -- excludes nothing, identical to the no-steps baseline", () => {
+      const withEmptySteps = CandidateGenerator.sampleAlongPolyline(polyline, [], config);
+      expect(withEmptySteps).toHaveLength(9);
+    });
+
+    it("a single step spanning the whole route tagged as a limited-access highway drops every candidate", () => {
+      const steps = [step("Merge onto <b>Highway 401</b> E", 9500)];
+      const candidates = CandidateGenerator.sampleAlongPolyline(polyline, steps, config);
+      expect(candidates).toHaveLength(0);
+    });
+
+    it("a single step spanning the whole route tagged as an arterial road (Highway 7) drops nothing", () => {
+      const steps = [step("Turn right onto Highway 7", 9500)];
+      const candidates = CandidateGenerator.sampleAlongPolyline(polyline, steps, config);
+      expect(candidates).toHaveLength(9);
+    });
+
+    it("mixed route: an arterial first half survives, a limited-access-highway second half is excluded -- correct partial exclusion, not all-or-nothing", () => {
+      // Step 0: 0-5000m, "Highway 7" (arterial, must survive).
+      // Step 1: 5000-9500m (routeLengthMeters), "Highway 401" (must be excluded).
+      const steps = [step("Continue on Highway 7", 5000), step("Merge onto Highway 401 E", 9500)];
+      const candidates = CandidateGenerator.sampleAlongPolyline(polyline, steps, config);
+
+      // Samples at targetDistance 1000..5000 (routeOrderIndex 0-4) fall in the
+      // arterial step and survive; 6000..9000 (routeOrderIndex 5-8) fall in the
+      // highway step and are dropped.
+      expect(candidates.map((c) => c.routeOrderIndex)).toEqual([0, 1, 2, 3, 4]);
+      expect(candidates).toHaveLength(5);
+      expect(candidates.length).toBeLessThan(9); // strictly smaller than the unfiltered baseline
+    });
+
+    it("boundary case: a candidate landing exactly on the step transition is attributed to the earlier (ending) step, not the next one", () => {
+      // The routeOrderIndex=4 sample (targetDistance=5000m) lands exactly on
+      // step 0's cumulativeDistanceMeters boundary in the mixed-route test
+      // above and is attributed to step 0 (arterial, survives) -- this test
+      // isolates that exact assertion so a regression here is caught
+      // specifically, not just incidentally via the mixed-route count.
+      const steps = [step("Continue on Highway 7", 5000), step("Merge onto Highway 401 E", 9500)];
+      const candidates = CandidateGenerator.sampleAlongPolyline(polyline, steps, config);
+      const boundaryCandidate = candidates.find((c) => c.routeOrderIndex === 4);
+      expect(boundaryCandidate).toBeDefined(); // survived -> attributed to step 0 (arterial), not step 1 (highway)
+
+      // And the inverse: if the boundary step itself were the highway (not
+      // the arterial), the exact-boundary candidate would still be attributed
+      // to the earlier ("ending") step per the same rule -- confirm this by
+      // swapping which side of the boundary is the highway.
+      const swappedSteps = [step("Merge onto Highway 401 E", 5000), step("Continue on Highway 7", 9500)];
+      const swappedCandidates = CandidateGenerator.sampleAlongPolyline(polyline, swappedSteps, config);
+      const swappedBoundaryCandidate = swappedCandidates.find((c) => c.routeOrderIndex === 4);
+      expect(swappedBoundaryCandidate).toBeUndefined(); // dropped -> attributed to step 0 (now the highway)
+    });
+
+    it("excludes highway candidates and out-of-radius candidates independently (both hard-rejection rules compose correctly)", () => {
+      // Reuse the out-and-back route from the radius-filter describe block
+      // above, but additionally tag the outbound leg's first quarter as a
+      // limited-access highway -- confirms FR-020 exclusion and the
+      // pre-existing radius exclusion don't interfere with each other.
+      const far = northOf(TORONTO, 105);
+      const outAndBack = [TORONTO, far, { ...TORONTO }];
+      const radiusConfig = baseConfig({
+        candidateSpacingMeters: 25000,
+        maxRawCandidatesSampled: 20,
+        geographicCenter: TORONTO,
+        geographicRadiusKm: 50,
+      });
+      // Baseline (no steps) survivors per the earlier test: routeOrderIndex [0, 1, 6, 7]
+      // at cumulative km 25, 50, 175, 200 respectively (total route length 210km).
+      const highwaySteps = [step("Merge onto Highway 401 E", 30000), step("Continue on Highway 7", 210000)];
+      const candidates = CandidateGenerator.sampleAlongPolyline(outAndBack, highwaySteps, radiusConfig);
+
+      // routeOrderIndex 0 (25km, in the highway-tagged first 30km) is now also
+      // excluded on top of the radius filter; routeOrderIndex 1 (50km) is past
+      // the highway step boundary and unaffected by FR-020, but was already
+      // in-radius; 6 and 7 remain in-radius and off the highway step.
+      expect(candidates.map((c) => c.routeOrderIndex)).toEqual([1, 6, 7]);
     });
   });
 });

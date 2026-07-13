@@ -56,8 +56,10 @@ function makeFetchRouter(opts: {
   directDurationSeconds?: number;
   transitBehavior?: TransitBehavior;
   reverseGeocodeBehavior?: () => { status: string; results: unknown[] };
+  /** FR-020/INC-11: injects `leg.steps` into the driving-Directions response. */
+  drivingSteps?: Array<{ html_instructions?: string; distance?: { value: number }; maneuver?: string }>;
 }) {
-  const { directDurationSeconds = 480, transitBehavior, reverseGeocodeBehavior } = opts;
+  const { directDurationSeconds = 480, transitBehavior, reverseGeocodeBehavior, drivingSteps } = opts;
   let transitCallIndex = 0;
 
   return vi.fn(async (url: string) => {
@@ -81,7 +83,12 @@ function makeFetchRouter(opts: {
           status: "OK",
           routes: [
             {
-              legs: [{ duration: { value: directDurationSeconds } }],
+              legs: [
+                {
+                  duration: { value: directDurationSeconds },
+                  ...(drivingSteps !== undefined ? { steps: drivingSteps } : {}),
+                },
+              ],
               overview_polyline: { points: ENCODED_POLYLINE },
             },
           ],
@@ -333,6 +340,77 @@ describe("POST /api/drop-off-search -- FR-006f, FR-010, FR-011, FR-012, FR-013",
       expect(statusCode()).toBe(200);
       const body = jsonBody() as DropOffSearchResponse;
       expect(body.status).not.toBe("out_of_service_area");
+    });
+  });
+
+  describe("FR-020 highway exclusion, end-to-end through the real endpoint (design.md section 4.2a, DEC-6)", () => {
+    it("every raw candidate on a limited-access highway -> no_viable_option, the existing FR-012 path -- no new status/branch introduced", async () => {
+      applyEnv(validEnv());
+      const fetchSpy = makeFetchRouter({
+        // A single step spanning the whole route (candidateGenerator always
+        // attributes every sample to steps[0] when there is exactly one
+        // step, regardless of its cumulativeDistanceMeters), tagged as a
+        // limited-access highway -- every raw candidate is excluded before
+        // ranking ever runs.
+        drivingSteps: [{ html_instructions: "Merge onto <b>Highway 401</b> E", distance: { value: 10000 } }],
+      });
+      vi.stubGlobal("fetch", fetchSpy);
+
+      const { req, res, statusCode, jsonBody } = createMock({ method: "POST", body: requestBody() });
+      await handler(req, res);
+
+      expect(statusCode()).toBe(200);
+      const body = jsonBody() as DropOffSearchResponse;
+      // Same status and message text as the pre-existing FR-012
+      // "no_viable_option" path (e.g. the ZERO_RESULTS-transit test above) --
+      // confirms FR-020 does not introduce any new fallback/status/message.
+      expect(body.status).toBe("no_viable_option");
+      expect(body.candidates).toEqual([]);
+      expect(body.message).toBe(
+        "We couldn't find a route with transit access to the passenger's destination along this trip. Try a different destination, or check back later — transit service may vary by time of day.",
+      );
+
+      // The highway-check reused the already-fetched driving-Directions
+      // steps; it must not have triggered a second driving-Directions call,
+      // and -- because every raw candidate was excluded before Phase 2 --
+      // no Distance Matrix call should have been made either.
+      const calls = (fetchSpy as unknown as { mock: { calls: [string][] } }).mock.calls;
+      const drivingDirectionsCalls = calls.filter(([url]) => {
+        const u = new URL(url);
+        return u.pathname.includes("/directions/") && u.searchParams.get("mode") !== "transit";
+      });
+      const distanceMatrixCalls = calls.filter(([url]) => new URL(url).pathname.includes("/distancematrix/"));
+      expect(drivingDirectionsCalls).toHaveLength(1);
+      expect(distanceMatrixCalls).toHaveLength(0);
+    });
+
+    it("a whole route tagged as an arterial road (Highway 7) is unaffected -- still ranks normally (guards against an over-broad match)", async () => {
+      applyEnv(validEnv());
+      vi.stubGlobal(
+        "fetch",
+        makeFetchRouter({
+          drivingSteps: [{ html_instructions: "Continue on Highway 7", distance: { value: 10000 } }],
+        }),
+      );
+
+      const { req, res, statusCode, jsonBody } = createMock({ method: "POST", body: requestBody() });
+      await handler(req, res);
+
+      expect(statusCode()).toBe(200);
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("ranked");
+      expect(body.candidates.length).toBeGreaterThan(0);
+    });
+
+    it("a route with no steps at all (defensive fail-open) still ranks normally -- confirms the exclusion never wrongly blocks a route it can't attribute", async () => {
+      applyEnv(validEnv());
+      vi.stubGlobal("fetch", makeFetchRouter({})); // no drivingSteps supplied at all
+
+      const { req, res, statusCode, jsonBody } = createMock({ method: "POST", body: requestBody() });
+      await handler(req, res);
+
+      expect(statusCode()).toBe(200);
+      expect((jsonBody() as DropOffSearchResponse).status).toBe("ranked");
     });
   });
 

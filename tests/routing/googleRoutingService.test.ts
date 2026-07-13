@@ -10,7 +10,11 @@ const DEST = { lat: 43.7, lng: -79.4 };
 // correct; polyline.test.ts covers decoding correctness directly.
 const DUMMY_POLYLINE = "??";
 
-function directionsOk(overrides: { duration: number; durationInTraffic?: number }) {
+function directionsOk(overrides: {
+  duration: number;
+  durationInTraffic?: number;
+  steps?: Array<{ html_instructions?: string; distance?: { value: number }; maneuver?: string }>;
+}) {
   return {
     ok: true,
     status: 200,
@@ -24,6 +28,7 @@ function directionsOk(overrides: { duration: number; durationInTraffic?: number 
               ...(overrides.durationInTraffic !== undefined
                 ? { duration_in_traffic: { value: overrides.durationInTraffic } }
                 : {}),
+              ...(overrides.steps !== undefined ? { steps: overrides.steps } : {}),
             },
           ],
           overview_polyline: { points: DUMMY_POLYLINE },
@@ -153,6 +158,71 @@ describe("createGoogleRoutingService -- FR-006a, FR-007 (live traffic)", () => {
 
     const calledUrl = new URL(fetchSpy.mock.calls[0]![0] as string);
     expect(calledUrl.searchParams.get("key")).toBe("my-specific-configured-key");
+  });
+
+  describe("DirectionStep retention (FR-020, design.md section 4.1a/INC-11) -- zero new provider calls", () => {
+    it("retains steps[] from the same Directions response, computing correct running cumulativeDistanceMeters, and makes exactly 1 fetch call", async () => {
+      const fetchSpy = vi.fn(async () =>
+        directionsOk({
+          duration: 600,
+          steps: [
+            { html_instructions: "Head <b>north</b> on Main St", distance: { value: 500 } },
+            { html_instructions: "Merge onto <b>ON-401 E</b>", distance: { value: 3000 }, maneuver: "merge" },
+            { html_instructions: "Take exit 42", distance: { value: 1200 } },
+          ],
+        }),
+      );
+      const service = createGoogleRoutingService({ apiKey: "test-key", fetchImpl: fetchSpy });
+
+      const result = await service.getDirectRoute(START, DEST);
+
+      // Zero new provider calls: this is the same single Directions call
+      // FR-006a/FR-007 already made -- verified via call-count assertion,
+      // not just trusting the claim.
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+      expect(result.steps).toHaveLength(3);
+      // Running total, not each step's own distance.
+      expect(result.steps[0]!.distanceMeters).toBe(500);
+      expect(result.steps[0]!.cumulativeDistanceMeters).toBe(500);
+      expect(result.steps[1]!.distanceMeters).toBe(3000);
+      expect(result.steps[1]!.cumulativeDistanceMeters).toBe(3500);
+      expect(result.steps[2]!.distanceMeters).toBe(1200);
+      expect(result.steps[2]!.cumulativeDistanceMeters).toBe(4700);
+
+      // Raw HTML preserved (tags intact) -- tollHighwayRules.ts strips tags
+      // itself downstream, this layer must not pre-strip/alter the text.
+      expect(result.steps[1]!.instructionsHtml).toBe("Merge onto <b>ON-401 E</b>");
+
+      // maneuver round-trips when present and is undefined when absent.
+      expect(result.steps[1]!.maneuver).toBe("merge");
+      expect(result.steps[0]!.maneuver).toBeUndefined();
+    });
+
+    it("a missing/empty leg.steps defaults to steps: [] defensively rather than throwing", async () => {
+      const fetchSpy = vi.fn(async () => directionsOk({ duration: 600 })); // no `steps` key at all
+      const service = createGoogleRoutingService({ apiKey: "test-key", fetchImpl: fetchSpy });
+
+      const result = await service.getDirectRoute(START, DEST);
+
+      expect(result.steps).toEqual([]);
+    });
+
+    it("adding steps to the response does not affect duration_in_traffic preference (FR-007 unaffected)", async () => {
+      const fetchSpy = vi.fn(async () =>
+        directionsOk({
+          duration: 600,
+          durationInTraffic: 900,
+          steps: [{ html_instructions: "Merge onto Highway 401", distance: { value: 1000 } }],
+        }),
+      );
+      const service = createGoogleRoutingService({ apiKey: "test-key", fetchImpl: fetchSpy });
+
+      const result = await service.getDirectRoute(START, DEST);
+
+      expect(result.durationMinutes).toBe(15);
+      expect(result.steps).toHaveLength(1);
+    });
   });
 
   describe("REQUEST_TIMEOUT_MS enforcement (NFR-004, INC-7)", () => {
