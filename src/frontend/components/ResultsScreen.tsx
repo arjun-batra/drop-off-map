@@ -31,7 +31,7 @@ function emptyStateTitle(status: DropOffSearchResponse["status"]): string {
  * Screen 3 -- Results Screen, docs/ux-spec.md section 6. Covers all six
  * `DropOffSearchResponse.status` values:
  * - "ranked" (section 6.4): up to `maxCandidatesReturned` cards, rank-1 gets
- *   the "BEST OPTION" treatment.
+ *   the "TOP PICK" treatment.
  * - "fallback" (section 6.5): single "CLOSEST OPTION" card + warning banner.
  * - "no_viable_option" (section 6.6): empty state with `response.message`.
  * - "timeout" (INC-7, design.md section 6.3/8): empty state with

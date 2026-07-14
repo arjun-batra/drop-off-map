@@ -29,8 +29,7 @@ export function WalkIcon({ size = "md", className }: IconProps) {
       aria-hidden="true"
       focusable="false"
       className={className}
-      width={px}
-      height={px}
+      style={{ width: px, height: px }}
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -60,8 +59,7 @@ export function TransitIcon({ size = "md", className }: IconProps) {
       aria-hidden="true"
       focusable="false"
       className={className}
-      width={px}
-      height={px}
+      style={{ width: px, height: px }}
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -86,8 +84,7 @@ export function CarIcon({ size = "md", className }: IconProps) {
       aria-hidden="true"
       focusable="false"
       className={className}
-      width={px}
-      height={px}
+      style={{ width: px, height: px }}
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -111,8 +108,7 @@ export function FlagIcon({ size = "md", className }: IconProps) {
       aria-hidden="true"
       focusable="false"
       className={className}
-      width={px}
-      height={px}
+      style={{ width: px, height: px }}
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -134,15 +130,18 @@ export function ChevronIcon({ size = "sm", className, expanded }: IconProps & { 
       aria-hidden="true"
       focusable="false"
       className={className}
-      width={px}
-      height={px}
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
       strokeWidth="2"
       strokeLinecap="round"
       strokeLinejoin="round"
-      style={{ transform: expanded ? "rotate(180deg)" : "none", transition: "transform 150ms ease" }}
+      style={{
+        width: px,
+        height: px,
+        transform: expanded ? "rotate(180deg)" : "none",
+        transition: "transform 150ms ease",
+      }}
     >
       <path d="M6 9l6 6 6-6" />
     </svg>
