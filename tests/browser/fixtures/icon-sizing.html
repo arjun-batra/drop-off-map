@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<!--
+  Real-browser harness for BUG-002 re-verification (tests/browser/iconSizing.playwright.test.ts).
+
+  This is a QA-owned fixture, not production markup (there is no
+  index.html/main.tsx entry point here) -- it exists only so a real Chromium
+  instance, driven by Playwright, can lay out the ACTUAL, unmodified
+  `ResultsScreen`/`icons.tsx` components against the ACTUAL, unmodified
+  `src/frontend/styles/tokens.css` and resolve `var(--icon-size-*)` the way a
+  real browser does (jsdom cannot -- see icon-sizing-entry.tsx and the test
+  file for why this harness exists instead of a jsdom-only check).
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>BUG-002 icon sizing harness</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./icon-sizing-entry.tsx"></script>
+  </body>
+</html>
