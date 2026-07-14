@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PublicConfig } from "../../src/config/schema";
 import { ResultsScreen } from "../../src/frontend/components/ResultsScreen";
-import type { DropOffSearchRequest, DropOffSearchResponse } from "../../src/search/types";
+import type { DropOffSearchCandidate, DropOffSearchRequest, DropOffSearchResponse } from "../../src/search/types";
 
 // INC-10: MapView renders via Google's Maps JavaScript API, loaded
 // asynchronously through @googlemaps/js-api-loader -- no real key/network is
@@ -100,7 +100,7 @@ function render(
 }
 
 describe("ResultsScreen -- ux-spec.md section 6, FR-010/FR-011/FR-012/FR-013", () => {
-  it("ranked: renders each candidate card with rank badge, BEST OPTION on #1 only, and the full FR-013 time breakdown", () => {
+  it("ranked: renders each candidate card with rank badge, TOP PICK on #1 only, and the full FR-013 time breakdown", () => {
     const response: DropOffSearchResponse = {
       status: "ranked",
       candidates: [
@@ -139,15 +139,15 @@ describe("ResultsScreen -- ux-spec.md section 6, FR-010/FR-011/FR-012/FR-013", (
     render(response);
 
     expect(container.textContent).toContain("Oak Ave & Main St");
-    expect(container.textContent).toContain("BEST OPTION");
+    expect(container.textContent).toContain("TOP PICK");
     expect(container.textContent).toContain("+3 min");
     expect(container.textContent).toContain("27 min");
     expect(container.textContent).toContain("26 min");
 
     const cards = container.querySelectorAll(".results-screen__card");
     expect(cards).toHaveLength(2);
-    expect(cards[0]!.textContent).toContain("BEST OPTION");
-    expect(cards[1]!.textContent).not.toContain("BEST OPTION");
+    expect(cards[0]!.textContent).toContain("TOP PICK");
+    expect(cards[1]!.textContent).not.toContain("TOP PICK");
   });
 
   it("ranked: rounds sub-minute time values to the nearest minute per ux-spec.md section 6.4", () => {
@@ -178,7 +178,7 @@ describe("ResultsScreen -- ux-spec.md section 6, FR-010/FR-011/FR-012/FR-013", (
     expect(container.textContent).toContain("18 min"); // 17.8 rounds to 18
   });
 
-  it("fallback: renders exactly one card labeled CLOSEST OPTION, no BEST OPTION, warning banner visible, danger-colored detour row", () => {
+  it("fallback: renders exactly one card labeled CLOSEST OPTION, no TOP PICK, warning banner visible, danger-colored detour row", () => {
     const response: DropOffSearchResponse = {
       status: "fallback",
       candidates: [
@@ -206,7 +206,7 @@ describe("ResultsScreen -- ux-spec.md section 6, FR-010/FR-011/FR-012/FR-013", (
     const cards = container.querySelectorAll(".results-screen__card");
     expect(cards).toHaveLength(1);
     expect(container.textContent).toContain("CLOSEST OPTION");
-    expect(container.textContent).not.toContain("BEST OPTION");
+    expect(container.textContent).not.toContain("TOP PICK");
     expect(container.textContent).toContain("None of the drop-off points found");
 
     const dangerValue = container.querySelector(".results-screen__row-value--danger");
@@ -497,6 +497,283 @@ describe("ResultsScreen -- ux-spec.md section 6, FR-010/FR-011/FR-012/FR-013", (
       // No re-render of MapView with different props should be triggered by
       // a card click alone (highlightedRank only changes via a pin click).
       expect(mockMapViewSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Card redesign + FR-021 stop detail + expand/collapse (ux-spec.md section 6.4/6.4b, INC-12)", () => {
+    const RANK1_WITH_STOPS: DropOffSearchCandidate = {
+      rank: 1,
+      location: { lat: 43.66, lng: -79.4 },
+      label: "Oak Ave & Main St",
+      routeOrderIndex: 3,
+      driveTimeToDropoffMinutes: 8,
+      detourMinutes: 3,
+      walkTimeMinutes: 4,
+      waitTimeMinutes: 5,
+      transitTimeMinutes: 17,
+      passengerTotalTimeMinutes: 26,
+      driverTotalTimeMinutes: 27,
+      exceedsThreshold: false,
+      boardingStop: {
+        name: "Oak Ave & Main St",
+        location: { lat: 43.66, lng: -79.4 },
+        lineName: "506",
+        headsign: "Downtown Loop",
+      },
+      arrivalStop: {
+        name: "Bay St Station",
+        location: { lat: 43.7, lng: -79.38 },
+        lineName: "506",
+        headsign: "Downtown Loop",
+      },
+    };
+
+    const RANK2_WITH_STOPS: DropOffSearchCandidate = {
+      rank: 2,
+      location: { lat: 43.67, lng: -79.41 },
+      label: "Elm St & 2nd Ave",
+      routeOrderIndex: 5,
+      driveTimeToDropoffMinutes: 9,
+      detourMinutes: 4,
+      walkTimeMinutes: 6,
+      waitTimeMinutes: 6,
+      transitTimeMinutes: 18,
+      passengerTotalTimeMinutes: 30,
+      driverTotalTimeMinutes: 29,
+      exceedsThreshold: false,
+      boardingStop: {
+        name: "Elm St & 5th Ave",
+        location: { lat: 43.67, lng: -79.41 },
+        lineName: "12",
+        headsign: "Airport Express",
+      },
+      arrivalStop: {
+        name: "King St Loop",
+        location: { lat: 43.72, lng: -79.39 },
+        lineName: "12",
+        headsign: "Airport Express",
+      },
+    };
+
+    const RANK3_WALKING_ONLY: DropOffSearchCandidate = {
+      rank: 3,
+      location: { lat: 43.68, lng: -79.42 },
+      label: "King St & River Rd",
+      routeOrderIndex: 8,
+      driveTimeToDropoffMinutes: 10,
+      detourMinutes: 2,
+      walkTimeMinutes: 12,
+      waitTimeMinutes: 0,
+      transitTimeMinutes: 0,
+      passengerTotalTimeMinutes: 12,
+      driverTotalTimeMinutes: 20,
+      exceedsThreshold: false,
+      // boardingStop/arrivalStop deliberately absent -- DEC-3 walking-only.
+    };
+
+    const RESPONSE_WITH_STOPS: DropOffSearchResponse = {
+      status: "ranked",
+      candidates: [RANK1_WITH_STOPS, RANK2_WITH_STOPS, RANK3_WALKING_ONLY],
+      requestId: "r1",
+      timingMs: 1200,
+    };
+
+    function card(rank: number): HTMLElement {
+      return document.getElementById(`results-screen-card-${rank}`) as HTMLElement;
+    }
+
+    function toggle(rank: number): HTMLElement {
+      return card(rank).querySelector(".results-screen__card-toggle") as HTMLElement;
+    }
+
+    it("rank 1 (top pick) is forced-expanded: no role=button/tabIndex/aria-expanded on its header, and shows the full FR-021 itinerary with REAL data substituted, not literal placeholder text", () => {
+      render(RESPONSE_WITH_STOPS);
+
+      const t = toggle(1);
+      expect(t.getAttribute("role")).toBeNull();
+      expect(t.hasAttribute("tabindex")).toBe(false);
+      expect(t.hasAttribute("aria-expanded")).toBe(false);
+      expect(card(1).querySelector(".results-screen__chevron")).toBeNull();
+
+      const text = card(1).textContent!;
+      expect(text).toContain("Walk to Oak Ave & Main St");
+      expect(text).toContain("Board 506 → Downtown Loop");
+      expect(text).toContain("Arrive at Bay St Station");
+      expect(text).toContain("TOP PICK");
+      // Never literal placeholder text.
+      expect(text).not.toContain("{boardingStop.name}");
+      expect(text).not.toContain("{lineName}");
+      expect(text).not.toContain("{headsign}");
+      expect(text).not.toContain("undefined");
+    });
+
+    it("ranks 2/3 are collapsed by default (aria-expanded=false), and the full itinerary is NOT in the DOM's text until expanded", () => {
+      render(RESPONSE_WITH_STOPS);
+
+      const t2 = toggle(2);
+      expect(t2.getAttribute("role")).toBe("button");
+      expect(t2.getAttribute("tabindex")).toBe("0");
+      expect(t2.getAttribute("aria-expanded")).toBe("false");
+      expect(card(2).className).toContain("results-screen__card--collapsed");
+      expect(card(2).textContent).not.toContain("Board ");
+      expect(card(2).textContent).not.toContain("Walk to Elm St & 5th Ave");
+      // Collapsed headline uses the smaller (non type-metric) treatment + "total" caption.
+      expect(card(2).textContent).toContain("total");
+      expect(card(2).textContent).not.toContain("total for your passenger");
+    });
+
+    it("clicking a collapsed card's toggle expands it in place, revealing rank 2's OWN boarding/arrival stop detail (not rank 1's)", () => {
+      render(RESPONSE_WITH_STOPS);
+      const t2 = toggle(2);
+
+      act(() => {
+        t2.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+
+      expect(t2.getAttribute("aria-expanded")).toBe("true");
+      expect(card(2).className).toContain("results-screen__card--expanded");
+      const text = card(2).textContent!;
+      expect(text).toContain("Walk to Elm St & 5th Ave");
+      expect(text).toContain("Board 12 → Airport Express");
+      expect(text).toContain("Arrive at King St Loop");
+      // Confirms no data bleed from rank 1.
+      expect(text).not.toContain("Oak Ave & Main St");
+      expect(text).not.toContain("Downtown Loop");
+    });
+
+    it("clicking an already-expanded (manually toggled) card collapses it back", () => {
+      render(RESPONSE_WITH_STOPS);
+      const t2 = toggle(2);
+      act(() => t2.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      expect(t2.getAttribute("aria-expanded")).toBe("true");
+      act(() => t2.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      expect(t2.getAttribute("aria-expanded")).toBe("false");
+      expect(card(2).textContent).not.toContain("Board 12");
+    });
+
+    it("keyboard-operable: pressing Enter on a collapsed card's toggle expands it (real aria-expanded state change, not just a visual class)", () => {
+      render(RESPONSE_WITH_STOPS);
+      const t3 = toggle(3);
+      expect(t3.getAttribute("aria-expanded")).toBe("false");
+
+      act(() => {
+        t3.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      });
+
+      expect(t3.getAttribute("aria-expanded")).toBe("true");
+    });
+
+    it("keyboard-operable: pressing Space on an expanded card's toggle collapses it back", () => {
+      render(RESPONSE_WITH_STOPS);
+      const t3 = toggle(3);
+      act(() => t3.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+      expect(t3.getAttribute("aria-expanded")).toBe("true");
+
+      act(() => {
+        t3.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+      });
+
+      expect(t3.getAttribute("aria-expanded")).toBe("false");
+    });
+
+    it("a key other than Enter/Space on a toggle does not change aria-expanded", () => {
+      render(RESPONSE_WITH_STOPS);
+      const t2 = toggle(2);
+      act(() => {
+        t2.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+      });
+      expect(t2.getAttribute("aria-expanded")).toBe("false");
+    });
+
+    it("DEC-3 walking-only candidate (rank 3), once expanded, shows 'Walk to destination' and never contains 'Board ' anywhere in the card", () => {
+      render(RESPONSE_WITH_STOPS);
+      const t3 = toggle(3);
+      act(() => t3.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+      const text = card(3).textContent!;
+      expect(text).toContain("Walk to destination");
+      expect(text).not.toContain("Board ");
+      expect(text).not.toContain("Arrive at");
+      // The journey strip's transit icon is omitted for a walking-only candidate.
+      expect(card(3).querySelector(".results-screen__journey-step--transit")).toBeNull();
+    });
+
+    it("a real-transit candidate's journey strip includes the transit icon step (present for non-walking-only candidates)", () => {
+      render(RESPONSE_WITH_STOPS);
+      expect(card(1).querySelector(".results-screen__journey-step--transit")).not.toBeNull();
+    });
+
+    it("collapsed cards' journey strip shows icons only, with no per-leg minute labels (per section 6.4's icons-only collapsed rule)", () => {
+      render(RESPONSE_WITH_STOPS);
+      const strip = card(2).querySelector(".results-screen__journey-strip")!;
+      // No type-body-small per-leg minute spans while collapsed.
+      expect(strip.querySelectorAll(".type-body-small")).toHaveLength(0);
+      // But the icons themselves are present (decorative svgs).
+      expect(strip.querySelectorAll("svg").length).toBeGreaterThan(0);
+    });
+
+    it("every candidate's icons are paired with a visible text label somewhere on the card (ux-spec.md section 2.6's 'never icon-alone' rule) -- spot-checked via aria-hidden icons plus adjacent visible text", () => {
+      render(RESPONSE_WITH_STOPS);
+      // All icons in this component are aria-hidden (decorative) -- the
+      // accompanying visible text is the card's own labeled rows/pills,
+      // already asserted above (Walk to/Board/Arrive at). Confirm no icon
+      // carries an accessible name of its own that would suggest it's being
+      // used as the sole information carrier.
+      const icons = card(1).querySelectorAll("svg[aria-hidden='true']");
+      expect(icons.length).toBeGreaterThan(0);
+      for (const icon of icons) {
+        expect(icon.getAttribute("aria-label")).toBeNull();
+      }
+    });
+
+    it("the fallback card (single candidate) is also forced-expanded and renders FR-021 stop detail when present", () => {
+      const fallbackResponse: DropOffSearchResponse = {
+        status: "fallback",
+        candidates: [{ ...RANK1_WITH_STOPS, exceedsThreshold: true }],
+        warning: "None of the drop-off points found keep your detour under 15 minutes.",
+        requestId: "r1",
+        timingMs: 900,
+      };
+      render(fallbackResponse);
+      const t1 = toggle(1);
+      expect(t1.getAttribute("role")).toBeNull();
+      expect(t1.hasAttribute("aria-expanded")).toBe(false);
+      const text = card(1).textContent!;
+      expect(text).toContain("Walk to Oak Ave & Main St");
+      expect(text).toContain("Board 506 → Downtown Loop");
+      expect(text).toContain("Arrive at Bay St Station");
+    });
+
+    it("configurability sanity: a differently-labeled/valued boardingStop/arrivalStop on the SAME rank renders its own new values, not a hardcoded string", () => {
+      const customResponse: DropOffSearchResponse = {
+        status: "ranked",
+        candidates: [
+          {
+            ...RANK1_WITH_STOPS,
+            boardingStop: {
+              name: "Totally Different Stop Name",
+              location: { lat: 1, lng: 1 },
+              lineName: "999",
+              headsign: "Somewhere Else",
+            },
+            arrivalStop: {
+              name: "A Different Arrival Stop",
+              location: { lat: 2, lng: 2 },
+              lineName: "999",
+              headsign: "Somewhere Else",
+            },
+          },
+        ],
+        requestId: "r1",
+        timingMs: 1,
+      };
+      render(customResponse);
+      const text = card(1).textContent!;
+      expect(text).toContain("Walk to Totally Different Stop Name");
+      expect(text).toContain("Board 999 → Somewhere Else");
+      expect(text).toContain("Arrive at A Different Arrival Stop");
+      expect(text).not.toContain("Downtown Loop");
+      expect(text).not.toContain("Bay St Station");
     });
   });
 });

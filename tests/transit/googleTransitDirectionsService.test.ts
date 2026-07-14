@@ -33,6 +33,38 @@ function transitStep(departureSeconds: number, arrivalSeconds: number) {
   };
 }
 
+/**
+ * QA (INC-12 independent verification): a TRANSIT step with full FR-021
+ * `transit_details` (line/headsign/departure_stop/arrival_stop), for testing
+ * `parseTransitRoute`'s `boardingStop`/`arrivalStop` capture directly --
+ * dev's own equivalent fixture was a temporary, uncommitted smoke test
+ * (docs/handoff.md's INC-12 section), so this is QA's own from-scratch build,
+ * not a copy of dev's.
+ */
+function transitStepWithStops(
+  departureSeconds: number,
+  arrivalSeconds: number,
+  opts: {
+    line?: { name?: string; short_name?: string };
+    headsign?: string;
+    departureStop?: { name?: string; location?: { lat: number; lng: number } };
+    arrivalStop?: { name?: string; location?: { lat: number; lng: number } };
+  },
+) {
+  return {
+    travel_mode: "TRANSIT",
+    duration: { value: arrivalSeconds - departureSeconds },
+    transit_details: {
+      departure_time: { value: departureSeconds },
+      arrival_time: { value: arrivalSeconds },
+      line: opts.line,
+      headsign: opts.headsign,
+      departure_stop: opts.departureStop,
+      arrival_stop: opts.arrivalStop,
+    },
+  };
+}
+
 function directionsResponse(body: unknown) {
   return { ok: true, status: 200, json: async () => body };
 }
@@ -95,6 +127,287 @@ describe("parseTransitRoute -- design.md section 4.4 step 11 formulas (pure, no 
     const result = parseTransitRoute(route, 0);
     expect(result.waitTimeMinutes).toBe(0);
     expect(result.transitTimeMinutes).toBe(0);
+  });
+});
+
+describe("parseTransitRoute -- FR-021 boardingStop/arrivalStop capture (QA-independent fixtures, INC-12)", () => {
+  it("multi-transfer (3 TRANSIT legs, 2 intermediate transfer stops): boardingStop is the FIRST step's departure stop, arrivalStop is the LAST step's arrival stop -- never an intermediate transfer stop", () => {
+    // Leg shape: walk -> Transit A (Stop Alpha -> Stop Beta) -> transfer walk
+    // -> Transit B (Stop Beta -> Stop Gamma) -> transfer walk -> Transit C
+    // (Stop Gamma -> Stop Delta) -> walk. "Stop Beta"/"Stop Gamma" are the
+    // two intermediate transfer stops that must NOT leak into either field.
+    const route = {
+      legs: [
+        {
+          steps: [
+            walkingStep(300),
+            transitStepWithStops(600, 1500, {
+              line: { name: "Route 1 Local", short_name: "1" },
+              headsign: "North Terminal",
+              departureStop: { name: "Stop Alpha", location: { lat: 1, lng: 1 } },
+              arrivalStop: { name: "Stop Beta", location: { lat: 2, lng: 2 } },
+            }),
+            walkingStep(60),
+            transitStepWithStops(1620, 2400, {
+              line: { name: "Route 2 Express", short_name: "2" },
+              headsign: "East Loop",
+              departureStop: { name: "Stop Beta", location: { lat: 2, lng: 2 } },
+              arrivalStop: { name: "Stop Gamma", location: { lat: 3, lng: 3 } },
+            }),
+            walkingStep(90),
+            transitStepWithStops(2500, 3200, {
+              line: { name: "Subway Line 3", short_name: "3" },
+              headsign: "South Yard",
+              departureStop: { name: "Stop Gamma", location: { lat: 3, lng: 3 } },
+              arrivalStop: { name: "Stop Delta", location: { lat: 4, lng: 4 } },
+            }),
+            walkingStep(120),
+          ],
+        },
+      ],
+    };
+    const result = parseTransitRoute(route, 0);
+
+    expect(result.boardingStop).toEqual({
+      name: "Stop Alpha",
+      location: { lat: 1, lng: 1 },
+      lineName: "1",
+      headsign: "North Terminal",
+    });
+    expect(result.arrivalStop).toEqual({
+      name: "Stop Delta",
+      location: { lat: 4, lng: 4 },
+      lineName: "3",
+      headsign: "South Yard",
+    });
+    // Explicit "not an intermediate transfer stop" checks.
+    expect(result.boardingStop!.name).not.toBe("Stop Beta");
+    expect(result.boardingStop!.name).not.toBe("Stop Gamma");
+    expect(result.arrivalStop!.name).not.toBe("Stop Beta");
+    expect(result.arrivalStop!.name).not.toBe("Stop Gamma");
+  });
+
+  it("a single-TRANSIT-leg route: boardingStop and arrivalStop are the same one step's departure/arrival stop (sanity check distinct from the multi-transfer case)", () => {
+    const route = {
+      legs: [
+        {
+          steps: [
+            walkingStep(240),
+            transitStepWithStops(500, 1300, {
+              line: { short_name: "506" },
+              headsign: "Downtown Loop",
+              departureStop: { name: "Oak Ave & Main St", location: { lat: 43.66, lng: -79.4 } },
+              arrivalStop: { name: "Bay St Station", location: { lat: 43.7, lng: -79.38 } },
+            }),
+          ],
+        },
+      ],
+    };
+    const result = parseTransitRoute(route, 0);
+    expect(result.boardingStop).toEqual({
+      name: "Oak Ave & Main St",
+      location: { lat: 43.66, lng: -79.4 },
+      lineName: "506",
+      headsign: "Downtown Loop",
+    });
+    expect(result.arrivalStop).toEqual({
+      name: "Bay St Station",
+      location: { lat: 43.7, lng: -79.38 },
+      lineName: "506",
+      headsign: "Downtown Loop",
+    });
+  });
+
+  it("walking-only route (DEC-3): boardingStop/arrivalStop are both undefined -- never empty strings or placeholder objects", () => {
+    const route = { legs: [{ steps: [walkingStep(180)] }] };
+    const result = parseTransitRoute(route, 0);
+    expect(result.boardingStop).toBeUndefined();
+    expect(result.arrivalStop).toBeUndefined();
+    // Explicitly rule out the empty-string/placeholder failure mode.
+    expect(result.boardingStop).not.toEqual({ name: "", location: expect.anything(), lineName: "", headsign: "" });
+  });
+
+  it("FR-021b: lineName prefers line.short_name over line.name when both are present", () => {
+    const route = {
+      legs: [
+        {
+          steps: [
+            transitStepWithStops(0, 600, {
+              line: { name: "Route 506 Local Downtown", short_name: "506" },
+              headsign: "Downtown Loop",
+              departureStop: { name: "A", location: { lat: 0, lng: 0 } },
+              arrivalStop: { name: "B", location: { lat: 1, lng: 1 } },
+            }),
+          ],
+        },
+      ],
+    };
+    const result = parseTransitRoute(route, 0);
+    expect(result.boardingStop!.lineName).toBe("506");
+  });
+
+  it("lineName falls back to the full line.name when short_name is absent, and headsign falls back to '' (not undefined/crash) when absent", () => {
+    const route = {
+      legs: [
+        {
+          steps: [
+            transitStepWithStops(0, 600, {
+              line: { name: "Subway Line 2" },
+              departureStop: { name: "A", location: { lat: 0, lng: 0 } },
+              arrivalStop: { name: "B", location: { lat: 1, lng: 1 } },
+            }),
+          ],
+        },
+      ],
+    };
+    const result = parseTransitRoute(route, 0);
+    expect(result.boardingStop!.lineName).toBe("Subway Line 2");
+    expect(result.boardingStop!.headsign).toBe("");
+  });
+
+  describe("buildStopDetail's fail-open behavior against deliberately malformed provider data (dev's claim, independently verified)", () => {
+    it("a TRANSIT step with a departure_stop missing its `name` field: boardingStop is undefined, not a half-populated object", () => {
+      const route = {
+        legs: [
+          {
+            steps: [
+              transitStepWithStops(0, 600, {
+                line: { short_name: "1" },
+                headsign: "North",
+                departureStop: { location: { lat: 1, lng: 1 } }, // name omitted
+                arrivalStop: { name: "B", location: { lat: 2, lng: 2 } },
+              }),
+            ],
+          },
+        ],
+      };
+      const result = parseTransitRoute(route, 0);
+      expect(result.boardingStop).toBeUndefined();
+      expect(result.arrivalStop).toBeDefined();
+    });
+
+    it("a TRANSIT step with an arrival_stop missing its `location` field entirely: arrivalStop is undefined, not a half-populated object", () => {
+      const route = {
+        legs: [
+          {
+            steps: [
+              transitStepWithStops(0, 600, {
+                line: { short_name: "1" },
+                departureStop: { name: "A", location: { lat: 1, lng: 1 } },
+                arrivalStop: { name: "B" }, // location omitted
+              }),
+            ],
+          },
+        ],
+      };
+      const result = parseTransitRoute(route, 0);
+      expect(result.boardingStop).toBeDefined();
+      expect(result.arrivalStop).toBeUndefined();
+    });
+
+    it("a TRANSIT step whose departure_stop is entirely null: boardingStop is undefined, no crash", () => {
+      // Deliberately violates the hand-typed GoogleTransitStep shape (`null`
+      // where the interface says `undefined`) to simulate a genuinely
+      // malformed real-world provider response TypeScript wouldn't otherwise
+      // let us construct -- exactly the case buildStopDetail's defensive
+      // check needs to survive.
+      const route = {
+        legs: [
+          {
+            steps: [
+              {
+                ...transitStepWithStops(0, 600, {
+                  line: { short_name: "1" },
+                  arrivalStop: { name: "B", location: { lat: 2, lng: 2 } },
+                }),
+                transit_details: {
+                  departure_time: { value: 0 },
+                  arrival_time: { value: 600 },
+                  line: { short_name: "1" },
+                  departure_stop: null,
+                  arrival_stop: { name: "B", location: { lat: 2, lng: 2 } },
+                },
+              },
+            ],
+          },
+        ],
+      } as unknown as Parameters<typeof parseTransitRoute>[0];
+      expect(() => parseTransitRoute(route, 0)).not.toThrow();
+      const result = parseTransitRoute(route, 0);
+      expect(result.boardingStop).toBeUndefined();
+    });
+
+    it("a stop's location has only a lat, no lng (partial/malformed coordinate): that stop is undefined, not a half-coordinate object", () => {
+      const route = {
+        legs: [
+          {
+            steps: [
+              transitStepWithStops(0, 600, {
+                line: { short_name: "1" },
+                departureStop: { name: "A", location: { lat: 1 } as unknown as { lat: number; lng: number } },
+                arrivalStop: { name: "B", location: { lat: 2, lng: 2 } },
+              }),
+            ],
+          },
+        ],
+      };
+      const result = parseTransitRoute(route, 0);
+      expect(result.boardingStop).toBeUndefined();
+    });
+
+    it("a stop's location has non-numeric lat/lng (e.g. a string coordinate from a malformed response): that stop is undefined, no crash", () => {
+      const route = {
+        legs: [
+          {
+            steps: [
+              transitStepWithStops(0, 600, {
+                line: { short_name: "1" },
+                departureStop: {
+                  name: "A",
+                  location: { lat: "43.66", lng: -79.4 } as unknown as { lat: number; lng: number },
+                },
+                arrivalStop: { name: "B", location: { lat: 2, lng: 2 } },
+              }),
+            ],
+          },
+        ],
+      };
+      expect(() => parseTransitRoute(route, 0)).not.toThrow();
+      const result = parseTransitRoute(route, 0);
+      expect(result.boardingStop).toBeUndefined();
+    });
+
+    it("a TRANSIT step with no `line` field at all: lineName falls back to '' (empty string), not a crash, and the stop is still otherwise valid (name/location present)", () => {
+      const route = {
+        legs: [
+          {
+            steps: [
+              transitStepWithStops(0, 600, {
+                departureStop: { name: "A", location: { lat: 1, lng: 1 } },
+                arrivalStop: { name: "B", location: { lat: 2, lng: 2 } },
+              }),
+            ],
+          },
+        ],
+      };
+      const result = parseTransitRoute(route, 0);
+      expect(result.boardingStop).toBeDefined();
+      expect(result.boardingStop!.lineName).toBe("");
+      expect(result.boardingStop!.headsign).toBe("");
+    });
+
+    it("a TRANSIT step whose entire transit_details is missing (defensive belt-and-suspenders, should never happen per the type but the runtime check must not crash): boardingStop/arrivalStop undefined for that step", () => {
+      const route = {
+        legs: [
+          {
+            steps: [
+              { travel_mode: "TRANSIT", duration: { value: 600 } }, // no transit_details at all
+            ],
+          },
+        ],
+      };
+      expect(() => parseTransitRoute(route, 0)).not.toThrow();
+    });
   });
 });
 

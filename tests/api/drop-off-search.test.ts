@@ -343,6 +343,158 @@ describe("POST /api/drop-off-search -- FR-006f, FR-010, FR-011, FR-012, FR-013",
     });
   });
 
+  describe("FR-021 boarding/arrival transit stop detail, end-to-end through the real endpoint (INC-12)", () => {
+    /**
+     * QA-built fixture (independent of dev's own hand-built smoke fixture,
+     * docs/handoff.md INC-12 section): a distinct boarding/arrival stop name,
+     * line, and headsign per call, so per-candidate assertions below can
+     * confirm each candidate's *own* data flows through rather than all
+     * candidates coincidentally sharing one hardcoded value.
+     */
+    function transitBodyWithStops(callIndex: number) {
+      const now = Math.floor(Date.now() / 1000);
+      return {
+        status: "OK",
+        routes: [
+          {
+            legs: [
+              {
+                steps: [
+                  { travel_mode: "WALKING", duration: { value: 240 } },
+                  {
+                    travel_mode: "TRANSIT",
+                    duration: { value: 900 },
+                    transit_details: {
+                      departure_time: { value: now },
+                      arrival_time: { value: now + 900 },
+                      line: { short_name: `${callIndex + 1}`, name: `Route ${callIndex + 1} Local` },
+                      headsign: `Headsign ${callIndex}`,
+                      departure_stop: {
+                        name: `Boarding Stop ${callIndex}`,
+                        location: { lat: 43.6 + callIndex * 0.001, lng: -79.4 },
+                      },
+                      arrival_stop: {
+                        name: `Arrival Stop ${callIndex}`,
+                        location: { lat: 43.7 + callIndex * 0.001, lng: -79.41 },
+                      },
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+    }
+
+    it("every candidate in a multi-candidate ranked response gets its OWN boardingStop/arrivalStop -- not only rank 1, not all sharing rank 1's data", async () => {
+      applyEnv(validEnv({ MAX_CANDIDATES_RETURNED: "5" }));
+      vi.stubGlobal("fetch", makeFetchRouter({ transitBehavior: transitBodyWithStops }));
+
+      const { req, res, statusCode, jsonBody } = createMock({ method: "POST", body: requestBody() });
+      await handler(req, res);
+
+      expect(statusCode()).toBe(200);
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("ranked");
+      expect(body.candidates.length).toBeGreaterThan(1); // must have more than just rank 1 to prove uniformity
+
+      const boardingNames = new Set<string>();
+      for (const c of body.candidates) {
+        expect(c.boardingStop).toBeDefined();
+        expect(c.arrivalStop).toBeDefined();
+        expect(c.boardingStop!.name).toMatch(/^Boarding Stop \d+$/);
+        expect(c.arrivalStop!.name).toMatch(/^Arrival Stop \d+$/);
+        expect(c.boardingStop!.lineName).toBeTruthy();
+        expect(c.boardingStop!.headsign).toBeTruthy();
+        expect(c.arrivalStop!.lineName).toBeTruthy();
+        expect(c.arrivalStop!.headsign).toBeTruthy();
+        boardingNames.add(c.boardingStop!.name);
+      }
+      // Distinct data per candidate (not one hardcoded stop object reused for
+      // every rank) -- each candidate's transit call used a distinct
+      // callIndex, so their boarding stop names must differ.
+      expect(boardingNames.size).toBe(body.candidates.length);
+    });
+
+    it("FR-021b: lineName prefers the short_name form, matching ux-spec.md's '506 -> Downtown Loop' example", async () => {
+      applyEnv(validEnv());
+      vi.stubGlobal("fetch", makeFetchRouter({ transitBehavior: transitBodyWithStops }));
+
+      const { req, res, statusCode, jsonBody } = createMock({ method: "POST", body: requestBody() });
+      await handler(req, res);
+
+      expect(statusCode()).toBe(200);
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.candidates[0]!.boardingStop!.lineName).toBe("1");
+    });
+
+    it("DEC-3 walking-only candidate: boardingStop/arrivalStop are absent from the serialized JSON response entirely -- never an empty-string placeholder", async () => {
+      applyEnv(validEnv());
+      vi.stubGlobal(
+        "fetch",
+        makeFetchRouter({
+          transitBehavior: () => ({
+            status: "OK",
+            routes: [{ legs: [{ steps: [{ travel_mode: "WALKING", duration: { value: 180 } }] }] }],
+          }),
+        }),
+      );
+
+      const { req, res, statusCode, jsonBody } = createMock({ method: "POST", body: requestBody() });
+      await handler(req, res);
+
+      expect(statusCode()).toBe(200);
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("ranked");
+      expect(body.candidates[0]!.boardingStop).toBeUndefined();
+      expect(body.candidates[0]!.arrivalStop).toBeUndefined();
+      // Belt-and-suspenders against the empty-string-placeholder failure
+      // mode: `createMock`'s `res.json()` captures the raw JS object
+      // reference (not a real HTTP round trip -- see tests/helpers/
+      // mockVercel.ts), so an `undefined`-valued key is still an "own
+      // property" on that raw object. Round-tripping through real
+      // JSON.stringify/parse (what an actual client over the wire receives)
+      // is the correct way to confirm the key is genuinely absent, not just
+      // undefined in-memory.
+      const wireShape = JSON.parse(JSON.stringify(body.candidates[0]!));
+      expect(Object.prototype.hasOwnProperty.call(wireShape, "boardingStop")).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(wireShape, "arrivalStop")).toBe(false);
+    });
+
+    it("a mix of real-transit and walking-only candidates in the same ranked response: each candidate's own stop-presence is independent (one candidate's data never leaks into another's)", async () => {
+      applyEnv(validEnv({ MAX_CANDIDATES_RETURNED: "5" }));
+      vi.stubGlobal(
+        "fetch",
+        makeFetchRouter({
+          transitBehavior: (callIndex: number) =>
+            callIndex % 2 === 0
+              ? transitBodyWithStops(callIndex)
+              : { status: "OK", routes: [{ legs: [{ steps: [{ travel_mode: "WALKING", duration: { value: 180 } }] }] }] },
+        }),
+      );
+
+      const { req, res, statusCode, jsonBody } = createMock({ method: "POST", body: requestBody() });
+      await handler(req, res);
+
+      expect(statusCode()).toBe(200);
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("ranked");
+      expect(body.candidates.length).toBeGreaterThan(1);
+      // At least one of each kind must be present for this test to be meaningful.
+      const withStops = body.candidates.filter((c) => c.boardingStop !== undefined);
+      const withoutStops = body.candidates.filter((c) => c.boardingStop === undefined);
+      expect(withStops.length).toBeGreaterThan(0);
+      expect(withoutStops.length).toBeGreaterThan(0);
+      for (const c of withStops) {
+        expect(c.arrivalStop).toBeDefined();
+      }
+      for (const c of withoutStops) {
+        expect(c.arrivalStop).toBeUndefined();
+      }
+    });
+  });
+
   describe("FR-020 highway exclusion, end-to-end through the real endpoint (design.md section 4.2a, DEC-6)", () => {
     it("every raw candidate on a limited-access highway -> no_viable_option, the existing FR-012 path -- no new status/branch introduced", async () => {
       applyEnv(validEnv());
