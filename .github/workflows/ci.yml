@@ -5,6 +5,18 @@
 # (triggered by the same push/PR events) — see docs/runbook.md section 5 for why
 # deploy is intentionally not a step in this workflow.
 #
+# Playwright Chromium install (REV-022, added 2026-07-14): INC-12 added a
+# committed, permanent Playwright-based browser regression test
+# (tests/browser/iconSizing.playwright.test.ts) that runs as part of the
+# ordinary `npm test` step below (it matches vite.config.ts's test include
+# glob, it is not a separately opted-in suite). GitHub's ubuntu-latest
+# runners do not ship a pre-installed Chromium binary, so an explicit
+# `npx playwright install --with-deps chromium` step runs before Test —
+# pinned implicitly to whatever `playwright` version is resolved from
+# package-lock.json (currently ^1.56.1), not hardcoded here. This requires
+# no secrets and no environment variables (no MAP_API_KEY-style dependency);
+# see docs/runbook.md section 5 for the full explanation.
+#
 # This workflow expects, once dev's INC-1 scaffolding lands, a package.json at
 # repo root with `lint`, `test`, and `build` npm scripts, and a committed
 # package-lock.json (this workflow uses `npm ci`). See docs/runbook.md section 5.
@@ -55,6 +67,10 @@ jobs:
       - name: Install dependencies
         if: steps.pkgcheck.outputs.exists == 'true'
         run: npm ci
+
+      - name: Install Playwright Chromium (tests/browser/*.playwright.test.ts)
+        if: steps.pkgcheck.outputs.exists == 'true'
+        run: npx playwright install --with-deps chromium
 
       - name: Lint
         if: steps.pkgcheck.outputs.exists == 'true'
