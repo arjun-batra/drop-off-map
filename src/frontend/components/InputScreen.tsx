@@ -11,6 +11,16 @@ export interface InputScreenInitialValues {
   driverDestination: DropOffSearchLocation | null;
   passengerDestination: DropOffSearchLocation | null;
   maxDetourMinutesText: string;
+  /**
+   * FR-018 (ux-spec.md section 4.2a): reseeded on "Edit search" like every
+   * other field on this screen -- not cross-session persistence (NFR-003).
+   * Optional (unlike the other fields above) so existing callers that don't
+   * yet thread it through default to the checkbox's own unchecked default,
+   * rather than every `InputScreenInitialValues` construction site needing
+   * an update for a field this internal (non-design.md, frontend-only) type
+   * gained.
+   */
+  avoidTolls?: boolean;
 }
 
 interface InputScreenProps {
@@ -42,6 +52,11 @@ interface InputScreenProps {
  * a real `DropOffSearchRequest` once all four fields are valid -- SearchFlow.tsx
  * owns the actual fetch/stage transition, so this component stays a
  * controlled form that only reports a validated request upward.
+ *
+ * Per INC-13 (FR-018, ux-spec.md section 4.2a), the "Avoid tolls" checkbox
+ * is a fifth, always-valid input (no validation state of its own, unlike the
+ * four fields above) -- default unchecked, no persistence across sessions
+ * (NFR-003), reseeded on "Edit search" exactly like `maxDetourMinutes`.
  */
 export function InputScreen({ config, initialValues, onSubmit, onSessionExpired }: InputScreenProps) {
   const [maxDetourMinutes, setMaxDetourMinutes] = useState(initialValues?.maxDetourMinutesText ?? "");
@@ -53,6 +68,7 @@ export function InputScreen({ config, initialValues, onSubmit, onSessionExpired 
   const [passengerDestination, setPassengerDestination] = useState<ResolvedLocation | null>(
     initialValues?.passengerDestination ?? null,
   );
+  const [avoidTolls, setAvoidTolls] = useState(initialValues?.avoidTolls ?? false);
 
   const detourValidation = validateMaxDetourMinutes(maxDetourMinutes);
   const detourError = detourTouched && !detourValidation.valid ? detourValidation.error : undefined;
@@ -69,6 +85,7 @@ export function InputScreen({ config, initialValues, onSubmit, onSessionExpired 
       driverDestination,
       passengerDestination,
       maxDetourMinutes: detourValidation.minutes,
+      avoidTolls,
     });
   }
 
@@ -132,6 +149,24 @@ export function InputScreen({ config, initialValues, onSubmit, onSessionExpired 
           {detourError && (
             <p className="type-body-small input-screen__helper input-screen__helper--danger">{detourError}</p>
           )}
+        </div>
+
+        {/*
+          ux-spec.md section 4.2a: "this and 'avoid tolls' are trip
+          preferences, not route points" -- deliberately sits outside the
+          three-field timeline, next to the detour-minutes field.
+        */}
+        <div className="input-screen__field input-screen__field--checkbox">
+          <label className="type-body input-screen__checkbox-label" htmlFor="avoid-tolls-checkbox">
+            <input
+              id="avoid-tolls-checkbox"
+              type="checkbox"
+              className="input-screen__checkbox"
+              checked={avoidTolls}
+              onChange={(event) => setAvoidTolls(event.target.checked)}
+            />
+            Avoid tolls
+          </label>
         </div>
 
         {/*

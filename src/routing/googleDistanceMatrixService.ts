@@ -59,8 +59,18 @@ export interface DistanceMatrixService {
    * rows-by-elements matrix (`result[originIndex][destinationIndex]`)
    * mirroring Google's own response shape, so a 1xN call (start->batch)
    * and an Nx1 call (batch->dest) both fall out of the same method.
+   *
+   * `avoidTolls` (2026-07-12, FR-018/INC-13, design.md section 4.3a/5.1):
+   * per-request input, same precedent as `RoutingService.getDirectRoute`.
+   * Distance Matrix returns only durations, never steps/road names (section
+   * 4.7) -- this parameter affects the returned durations but cannot itself
+   * be used to verify toll-freeness for any specific candidate.
    */
-  getDurationsMinutes(origins: LatLng[], destinations: LatLng[]): Promise<ElementDurationMinutes[][]>;
+  getDurationsMinutes(
+    origins: LatLng[],
+    destinations: LatLng[],
+    avoidTolls: boolean,
+  ): Promise<ElementDurationMinutes[][]>;
 }
 
 function formatLatLngList(points: LatLng[]): string {
@@ -87,7 +97,11 @@ export function createGoogleDistanceMatrixService(
   const now = options.now ?? (() => new Date());
 
   return {
-    async getDurationsMinutes(origins: LatLng[], destinations: LatLng[]): Promise<ElementDurationMinutes[][]> {
+    async getDurationsMinutes(
+      origins: LatLng[],
+      destinations: LatLng[],
+      avoidTolls: boolean,
+    ): Promise<ElementDurationMinutes[][]> {
       const url = new URL(endpoint);
       url.searchParams.set("origins", formatLatLngList(origins));
       url.searchParams.set("destinations", formatLatLngList(destinations));
@@ -96,6 +110,11 @@ export function createGoogleDistanceMatrixService(
       // Distance Matrix only returns a traffic-aware duration_in_traffic
       // element when a departure_time is supplied.
       url.searchParams.set("departure_time", String(Math.floor(now().getTime() / 1000)));
+      // FR-018/design.md section 4.3a (INC-13): same best-effort `avoid=tolls`
+      // preference as the direct-route call -- see that file's comment.
+      if (avoidTolls) {
+        url.searchParams.set("avoid", "tolls");
+      }
       url.searchParams.set("key", options.apiKey);
 
       let res: { ok: boolean; status: number; json: () => Promise<unknown> };

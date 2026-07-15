@@ -77,7 +77,7 @@ export function createGoogleRoutingService(options: GoogleRoutingServiceOptions)
   const now = options.now ?? (() => new Date());
 
   return {
-    async getDirectRoute(start: LatLng, dest: LatLng): Promise<DirectRouteResult> {
+    async getDirectRoute(start: LatLng, dest: LatLng, avoidTolls: boolean): Promise<DirectRouteResult> {
       const url = new URL(endpoint);
       url.searchParams.set("origin", formatLatLng(start));
       url.searchParams.set("destination", formatLatLng(dest));
@@ -87,6 +87,14 @@ export function createGoogleRoutingService(options: GoogleRoutingServiceOptions)
       // departure_time is supplied; "now" is the live-traffic request shape
       // design.md section 4.1 step 2 calls for.
       url.searchParams.set("departure_time", String(Math.floor(now().getTime() / 1000)));
+      // FR-018/design.md section 4.1a (INC-13): a best-effort preference, not
+      // a hard constraint (DEC-5) -- Google may still return a toll route if
+      // no reasonable toll-free alternative exists. Verification of whether
+      // it actually succeeded happens downstream (analyzeTollUsage against
+      // this same response's steps, api/drop-off-search.ts).
+      if (avoidTolls) {
+        url.searchParams.set("avoid", "tolls");
+      }
       url.searchParams.set("key", options.apiKey);
 
       let res: { ok: boolean; status: number; json: () => Promise<unknown> };

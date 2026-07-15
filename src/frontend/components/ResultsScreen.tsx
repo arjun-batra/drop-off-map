@@ -24,6 +24,8 @@ function formatMinutes(value: number): string {
 function emptyStateTitle(status: DropOffSearchResponse["status"]): string {
   if (status === "no_viable_option") return "No drop-off points found";
   if (status === "timeout") return "This is taking longer than expected";
+  // FR-018/OQ-9 (INC-13, ux-spec.md section 6.6a).
+  if (status === "no_toll_free_route") return "No toll-free route found";
   return "We couldn't run that search";
 }
 
@@ -38,6 +40,11 @@ function emptyStateTitle(status: DropOffSearchResponse["status"]): string {
  *   `response.message` plus a "Try again" action -- distinct from
  *   "no_viable_option" so the copy invites a retry rather than implying the
  *   trip has no viable drop-off point.
+ * - "no_toll_free_route" (FR-018/OQ-9, INC-13, ux-spec.md section 6.6a):
+ *   empty state with `response.message`, same treatment as
+ *   "no_viable_option" (no "Try again" -- this is a deterministic outcome of
+ *   the same inputs, not a transient failure; only "← Edit search" is
+ *   offered, per ux-spec.md section 6.6a's explicit precedent-match).
  * - "out_of_service_area" / "invalid_input": not explicitly given their own
  *   Results-screen mockup in ux-spec.md (they're normally caught client-side
  *   at the Input Screen, per FR-003/FR-004's INC-2 field-level validation)
@@ -58,7 +65,8 @@ export function ResultsScreen({ response, request, onEditSearch, onTryAgain, map
     response.status === "no_viable_option" ||
     response.status === "out_of_service_area" ||
     response.status === "invalid_input" ||
-    response.status === "timeout";
+    response.status === "timeout" ||
+    response.status === "no_toll_free_route";
 
   const [highlightedRank, setHighlightedRank] = useState<number | null>(null);
 

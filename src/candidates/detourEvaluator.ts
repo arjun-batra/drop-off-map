@@ -26,6 +26,12 @@ export type DetourEvaluationConfig = Pick<AppConfig, "distanceMatrixBatchSize">;
  * so dev added `maxDetourMinutes` as an explicit parameter to make the
  * documented formula computable, rather than silently guessing a config
  * source for it. Flagged to tech-lead in docs/handoff.md for confirmation.
+ *
+ * `avoidTolls` (2026-07-12, FR-018/INC-13, design.md section 5.1): added as
+ * an explicit parameter positioned after `maxDetourMinutes` and before
+ * `config`, exactly as section 5.1's TS listing specifies -- per-request
+ * user input, not an `AppConfig` field, forwarded to both of Phase 2's
+ * Distance Matrix calls (design.md section 4.3a).
  */
 export interface DetourEvaluator {
   batchEvaluate(
@@ -34,6 +40,7 @@ export interface DetourEvaluator {
     directDriveTimeMinutes: number,
     candidates: RawCandidate[],
     maxDetourMinutes: number,
+    avoidTolls: boolean,
     config: DetourEvaluationConfig,
   ): Promise<EvaluatedCandidate[]>;
 }
@@ -64,16 +71,18 @@ function chunk<T>(items: T[], size: number): T[][] {
  */
 export function createDetourEvaluator(distanceMatrixService: DistanceMatrixService): DetourEvaluator {
   return {
-    async batchEvaluate(start, dest, directDriveTimeMinutes, candidates, maxDetourMinutes, config) {
+    async batchEvaluate(start, dest, directDriveTimeMinutes, candidates, maxDetourMinutes, avoidTolls, config) {
       const batches = chunk(candidates, config.distanceMatrixBatchSize);
       const evaluated: EvaluatedCandidate[] = [];
 
       for (const batch of batches) {
         const points = batch.map((candidate) => candidate.point);
 
+        // FR-018/design.md section 4.3a: both legs of every batch include the
+        // same `avoidTolls` preference the direct-baseline call used.
         const [toMatrix, fromMatrix] = await Promise.all([
-          distanceMatrixService.getDurationsMinutes([start], points),
-          distanceMatrixService.getDurationsMinutes(points, [dest]),
+          distanceMatrixService.getDurationsMinutes([start], points, avoidTolls),
+          distanceMatrixService.getDurationsMinutes(points, [dest], avoidTolls),
         ]);
 
         const toRow = toMatrix[0] ?? [];

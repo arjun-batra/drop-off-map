@@ -12,6 +12,7 @@ import { Ranker } from "../src/ranking/ranker.js";
 import { RoutingProviderError } from "../src/routing/errors.js";
 import { createGoogleDistanceMatrixService } from "../src/routing/googleDistanceMatrixService.js";
 import { createGoogleRoutingService } from "../src/routing/googleRoutingService.js";
+import { analyzeTollUsage } from "../src/routing/tollHighwayRules.js";
 import { DISCLAIMER_TEXT } from "../src/search/types.js";
 import type { DropOffSearchCandidate, DropOffSearchLocation, DropOffSearchRequest } from "../src/search/types.js";
 import { evaluateShortlist } from "../src/transit/evaluateShortlist.js";
@@ -32,6 +33,30 @@ function parseMaxDetourMinutes(raw: unknown): number | undefined {
   return typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : undefined;
 }
 
+/**
+ * FR-018/design.md section 5.2 (INC-13). Judgment call, flagged for
+ * tech-lead confirmation: design.md section 5.2's own comment on this field
+ * -- "default false, no server default/config" -- reads two ways: (a) the
+ * server must hard-require the field's presence (matching how
+ * `maxDetourMinutes`, which genuinely has no sensible default, is treated
+ * below), or (b) "no server default/config" only means the value isn't
+ * sourced from `AppConfig` (unlike, say, `maxCandidatesReturned`), not that
+ * an absent field must be rejected. Reading (a) would break every existing
+ * request the full pre-INC-13 regression suite sends (none of which include
+ * `avoidTolls` at all), directly contradicting this increment's own
+ * "QA can test" line in design.md section 10 ("unchecked-checkbox behavior
+ * is unaffected -- full regression pass against the existing
+ * ranked/fallback/no_viable_option suite"). Dev is taking reading (b): a
+ * missing `avoidTolls` field defaults to `false` (the checkbox's own
+ * unchecked default), so the full regression suite is genuinely unaffected;
+ * only a field that IS present but isn't a boolean (a real shape violation,
+ * e.g. a string) fails validation as `invalid_input`.
+ */
+function parseAvoidTolls(raw: unknown): boolean | undefined {
+  if (raw === undefined) return false;
+  return typeof raw === "boolean" ? raw : undefined;
+}
+
 function parseSearchRequest(body: unknown): DropOffSearchRequest | undefined {
   if (typeof body !== "object" || body === null) return undefined;
   const raw = body as Record<string, unknown>;
@@ -40,12 +65,19 @@ function parseSearchRequest(body: unknown): DropOffSearchRequest | undefined {
   const driverDestination = parseLocation(raw.driverDestination);
   const passengerDestination = parseLocation(raw.passengerDestination);
   const maxDetourMinutes = parseMaxDetourMinutes(raw.maxDetourMinutes);
+  const avoidTolls = parseAvoidTolls(raw.avoidTolls);
 
-  if (!start || !driverDestination || !passengerDestination || maxDetourMinutes === undefined) {
+  if (
+    !start ||
+    !driverDestination ||
+    !passengerDestination ||
+    maxDetourMinutes === undefined ||
+    avoidTolls === undefined
+  ) {
     return undefined;
   }
 
-  return { start, driverDestination, passengerDestination, maxDetourMinutes };
+  return { start, driverDestination, passengerDestination, maxDetourMinutes, avoidTolls };
 }
 
 /**
@@ -71,10 +103,14 @@ function parseSearchRequest(body: unknown): DropOffSearchRequest | undefined {
  * and the QA-owned test files this requires retiring alongside them.
  *
  * Validation ordering per design.md section 5.2 (fail fast, cheapest
- * first): (1) shape/type check of the 4 inputs -> "invalid_input"; (2)
- * radius check on `start` + `driverDestination` only (DQ-1:
- * `passengerDestination` is exempt) -> "out_of_service_area"; (3) the full
- * section-4 algorithm -> "ranked" | "fallback" | "no_viable_option".
+ * first): (1) shape/type check of the 4 pre-existing inputs plus
+ * `avoidTolls` (FR-018, INC-13) -> "invalid_input"; (2) radius check on
+ * `start` + `driverDestination` only (DQ-1: `passengerDestination` is
+ * exempt) -> "out_of_service_area"; (3) the full section-4 algorithm ->
+ * "ranked" | "fallback" | "no_viable_option" | "no_toll_free_route"
+ * (section 4.1a's short-circuit, OQ-9, when `avoidTolls === true` and even
+ * the best-effort toll-avoiding baseline route still traverses a known toll
+ * road).
  *
  * Business-outcome statuses (invalid_input/out_of_service_area/
  * no_viable_option/ranked/fallback) are all returned as HTTP 200 with
@@ -124,7 +160,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     return;
   }
 
-  const { start, driverDestination, passengerDestination, maxDetourMinutes } = searchRequest;
+  const { start, driverDestination, passengerDestination, maxDetourMinutes, avoidTolls } = searchRequest;
 
   // FR-004/DQ-1: only start + driverDestination are radius-checked;
   // passengerDestination may be any distance away.
@@ -162,7 +198,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   const orchestrationDeadline = new Date(requestStart + config.responseTimeTargetSeconds * 1000);
 
   try {
-    const directRoute = await routingService.getDirectRoute(start, driverDestination);
+    const directRoute = await routingService.getDirectRoute(start, driverDestination, avoidTolls);
+
+    // FR-018/OQ-9, design.md section 4.1a (INC-13): when the "avoid tolls"
+    // checkbox is checked, verify the best-effort avoid=tolls baseline route
+    // actually cleared a known toll road (DEC-5 -- Google's avoid=tolls is a
+    // preference, not a guarantee). If it still uses one, no reasonably
+    // toll-free route exists between start/driverDestination at all --
+    // short-circuit before Phase 1 (candidate generation) ever runs.
+    if (avoidTolls && analyzeTollUsage(directRoute.steps).usesTollRoad) {
+      res.status(200).json({
+        status: "no_toll_free_route",
+        candidates: [],
+        message:
+          "We couldn't find a route that avoids tolls for this trip. Uncheck \"Avoid tolls\" to see toll-inclusive options, or try a different start or destination.",
+        requestId,
+        timingMs: Date.now() - requestStart,
+      });
+      return;
+    }
+
     const rawCandidates = CandidateGenerator.sampleAlongPolyline(directRoute.polyline, directRoute.steps, config);
     const evaluatedCandidates = await detourEvaluator.batchEvaluate(
       start,
@@ -170,6 +225,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       directRoute.durationMinutes,
       rawCandidates,
       maxDetourMinutes,
+      avoidTolls,
       config,
     );
     const shortlist = ShortlistSelector.select(evaluatedCandidates, config);

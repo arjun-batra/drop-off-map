@@ -21,6 +21,15 @@ export interface DropOffSearchRequest {
   passengerDestination: DropOffSearchLocation;
   /** FR-002, user-entered, no server default and no upper bound (design.md section 1.3). */
   maxDetourMinutes: number;
+  /**
+   * FR-018 (2026-07-12, INC-13, design.md section 5.2): the "avoid tolls"
+   * checkbox value. Per-session/per-request user input, default `false`
+   * client-side (ux-spec.md section 4.2a) -- deliberately no server-side
+   * default/config fallback (design.md section 5.2's own comment); a request
+   * missing this field or sending a non-boolean value fails shape validation
+   * (`invalid_input`), same treatment as the other four fields.
+   */
+  avoidTolls: boolean;
 }
 
 /**
@@ -32,7 +41,13 @@ export interface DropOffSearchRequest {
  * deadline is exceeded before any candidate's transit evaluation could
  * complete -- distinct from `no_viable_option` (a genuine "nothing is
  * reachable" business outcome) so the frontend can invite a retry rather
- * than imply the trip itself has no viable drop-off point.
+ * than imply the trip itself has no viable drop-off point. "no_toll_free_route"
+ * (2026-07-12, FR-018/OQ-9, INC-13, design.md section 4.1a) is a
+ * message-only/empty-result outcome, same shape as `no_viable_option`,
+ * returned only when `avoidTolls === true` and even Google's best-effort
+ * toll-avoiding baseline route still traverses a known toll road (section
+ * 4.7's `analyzeTollUsage`) -- a short-circuit before Phase 1 ever runs, not
+ * a fallback to a toll-inclusive result.
  */
 export type DropOffSearchStatus =
   | "ranked"
@@ -40,7 +55,8 @@ export type DropOffSearchStatus =
   | "no_viable_option"
   | "out_of_service_area"
   | "invalid_input"
-  | "timeout";
+  | "timeout"
+  | "no_toll_free_route";
 
 /** One candidate as shown to the end user -- design.md section 5.2, FR-013. */
 export interface DropOffSearchCandidate {
@@ -91,7 +107,7 @@ export interface DropOffSearchResponse {
   candidates: DropOffSearchCandidate[];
   /** Present when status === "fallback" (FR-011). */
   warning?: string;
-  /** Present for out_of_service_area / no_viable_option / invalid_input / timeout (FR-004, FR-012, FR-003, INC-7). */
+  /** Present for out_of_service_area / no_viable_option / invalid_input / timeout / no_toll_free_route (FR-004, FR-012, FR-003, INC-7, FR-018). */
   message?: string;
   /** FR-014 (INC-7): present exactly when candidates.length > 0 ("ranked"/"fallback"). */
   disclaimer?: string;

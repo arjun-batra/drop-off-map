@@ -22,10 +22,11 @@ import type { DirectionStep } from "./types.js";
  * also anticipates a sibling `analyzeTollUsage()` function (INC-13, FR-018/
  * FR-019) reusing the exact same fixed-constant module and DirectionStep
  * input shape -- this module is a shared routing-domain business rule, not a
- * candidate-generation-specific concern. Only the highway half
- * (`isLimitedAccessHighway`) is implemented in this pass (INC-11); the toll
- * half (`analyzeTollUsage`) ships in INC-13 per design.md section 10's
- * explicit increment scoping.
+ * candidate-generation-specific concern. `isLimitedAccessHighway` shipped in
+ * INC-11 (FR-020); `analyzeTollUsage` (below) ships in INC-13 (FR-018), for
+ * its `usesTollRoad` half -- the `hasExitReentry` half is computed by the
+ * same function (design.md section 5.1's fixed signature) but is only
+ * consumed starting at INC-14 (FR-019).
  */
 
 const FOUR_HUNDRED_SERIES_NUMBERS = [
@@ -86,4 +87,63 @@ export function isLimitedAccessHighway(step: DirectionStep): boolean {
   const text = stripHtml(step.instructionsHtml);
   if (FOUR_HUNDRED_SERIES_PATTERN.test(text)) return true;
   return NAMED_LIMITED_ACCESS_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+/**
+ * design.md section 4.7's toll-road identifier list (2026-07-12, FR-018/
+ * FR-019/INC-13): "currently just Highway 407 / '407 ETR' / 'ON-407' /
+ * 'Express Toll Route' -- the only significant tolled highway in the service
+ * region." Deliberately narrower than `isLimitedAccessHighway`'s allowlist
+ * above -- most 400-series highways (401, 400, etc.) are limited-access but
+ * NOT tolled, so this function must not reuse that broader list.
+ */
+const TOLL_ROAD_PATTERNS: RegExp[] = [
+  /\b(?:on-|highway|hwy\.?|route)\s*-?\s*407\b/i,
+  /\b407\s*ETR\b/i,
+  /\bExpress Toll Route\b/i,
+];
+
+function isTollRoadStep(step: DirectionStep): boolean {
+  const text = stripHtml(step.instructionsHtml);
+  return TOLL_ROAD_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+/**
+ * design.md section 4.7/5.1's `analyzeTollUsage(steps)` (FR-018/FR-019,
+ * INC-13). Walks the ordered step list tracking an "on toll road" boolean:
+ * `usesTollRoad` is true if any step matches the toll-road allowlist above;
+ * `hasExitReentry` is true if the route contains an on -> off -> on
+ * transition (a run of toll-matching steps, then a run of non-matching
+ * steps, then another run of toll-matching steps) -- i.e. the route exits a
+ * toll road and later re-enters one within the same trip. A single
+ * unbroken run of toll-road steps (get on once, stay on, get off once) is
+ * `usesTollRoad: true, hasExitReentry: false` -- ordinary toll usage, not a
+ * re-entry pattern.
+ *
+ * This is a text-pattern heuristic, not a geometric/topological analysis of
+ * the actual road network (section 4.7's honest assessment, DEC-5) -- it can
+ * miss a re-entry if intermediate step text doesn't consistently reference
+ * the highway name, and cannot detect a toll road absent from the fixed
+ * pattern list above.
+ */
+export function analyzeTollUsage(steps: DirectionStep[]): { usesTollRoad: boolean; hasExitReentry: boolean } {
+  let usesTollRoad = false;
+  let hasExitReentry = false;
+  let wasOnTollRoad = false;
+  let hasExitedTollRoad = false;
+
+  for (const step of steps) {
+    const onTollRoad = isTollRoadStep(step);
+    if (onTollRoad) {
+      usesTollRoad = true;
+      if (hasExitedTollRoad && !wasOnTollRoad) {
+        hasExitReentry = true;
+      }
+    } else if (wasOnTollRoad) {
+      hasExitedTollRoad = true;
+    }
+    wasOnTollRoad = onTollRoad;
+  }
+
+  return { usesTollRoad, hasExitReentry };
 }

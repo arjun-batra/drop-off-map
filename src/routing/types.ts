@@ -27,8 +27,8 @@ export interface DirectRouteResult {
    * design.md section 4.1a/INC-11: previously fetched by every call and
    * silently discarded; now retained as new *data capture*, not a new
    * provider call. Needed by FR-020's highway-candidate attribution
-   * (section 4.2a). FR-018's `avoidTolls` parameter and its toll-usage
-   * verification are INC-13 scope, not added here.
+   * (section 4.2a) and, since INC-13, FR-018's toll-free-baseline
+   * verification (`analyzeTollUsage(steps)`, section 4.1a/4.7).
    */
   steps: DirectionStep[];
 }
@@ -47,13 +47,12 @@ export interface RoutingService {
    * `durationMinutes` is this design's FR-006b "direct drive time" baseline
    * (the value later subtracted from the via-dropoff route time to compute
    * detour, in INC-4's DetourEvaluator).
+   *
+   * `avoidTolls` (2026-07-12, FR-018/INC-13, design.md section 5.1): the
+   * per-request "avoid tolls" checkbox value (never an AppConfig field, same
+   * per-request-input precedent as `maxDetourMinutes`). When true, the
+   * implementation requests the provider's `avoid=tolls` parameter -- a
+   * best-effort preference, not a hard guarantee (DEC-5) -- on this call.
    */
-  getDirectRoute(start: LatLng, dest: LatLng): Promise<DirectRouteResult>;
-  // NOTE: design.md section 5.1's current listing also shows a 3rd
-  // `avoidTolls: boolean` parameter here (2026-07-12, FR-018) -- that is
-  // INC-13 scope (the "avoid tolls" checkbox plumbing) and is deliberately
-  // NOT added by this increment (INC-11, FR-020 only). INC-10/11/12 are
-  // documented as mutually independent in design.md section 10's dependency
-  // note, so this increment only introduces the `steps` data capture it
-  // itself needs.
+  getDirectRoute(start: LatLng, dest: LatLng, avoidTolls: boolean): Promise<DirectRouteResult>;
 }

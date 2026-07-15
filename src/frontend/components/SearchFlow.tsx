@@ -153,6 +153,7 @@ export function SearchFlow({ config, onSessionExpired }: SearchFlowProps) {
               driverDestination: lastRequest.driverDestination,
               passengerDestination: lastRequest.passengerDestination,
               maxDetourMinutesText: String(lastRequest.maxDetourMinutes),
+              avoidTolls: lastRequest.avoidTolls,
             }
           : undefined
       }
