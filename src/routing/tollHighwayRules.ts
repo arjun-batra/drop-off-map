@@ -96,16 +96,25 @@ export function isLimitedAccessHighway(step: DirectionStep): boolean {
  * region." Deliberately narrower than `isLimitedAccessHighway`'s allowlist
  * above -- most 400-series highways (401, 400, etc.) are limited-access but
  * NOT tolled, so this function must not reuse that broader list.
+ *
+ * Paired with a display `name` (INC-14, FR-019, section 4.6 step 2) so
+ * `describeTollRoadReentry` below can name the matched toll road in the
+ * factual description surfaced to the frontend, without changing
+ * `analyzeTollUsage`'s own fixed return shape (section 5.1).
  */
-const TOLL_ROAD_PATTERNS: RegExp[] = [
-  /\b(?:on-|highway|hwy\.?|route)\s*-?\s*407\b/i,
-  /\b407\s*ETR\b/i,
-  /\bExpress Toll Route\b/i,
+const TOLL_ROADS: Array<{ pattern: RegExp; name: string }> = [
+  { pattern: /\b(?:on-|highway|hwy\.?|route)\s*-?\s*407\b/i, name: "Highway 407" },
+  { pattern: /\b407\s*ETR\b/i, name: "Highway 407" },
+  { pattern: /\bExpress Toll Route\b/i, name: "Highway 407" },
 ];
 
-function isTollRoadStep(step: DirectionStep): boolean {
+function matchedTollRoadName(step: DirectionStep): string | undefined {
   const text = stripHtml(step.instructionsHtml);
-  return TOLL_ROAD_PATTERNS.some((pattern) => pattern.test(text));
+  return TOLL_ROADS.find(({ pattern }) => pattern.test(text))?.name;
+}
+
+function isTollRoadStep(step: DirectionStep): boolean {
+  return matchedTollRoadName(step) !== undefined;
 }
 
 /**
@@ -146,4 +155,43 @@ export function analyzeTollUsage(steps: DirectionStep[]): { usesTollRoad: boolea
   }
 
   return { usesTollRoad, hasExitReentry };
+}
+
+/**
+ * design.md section 4.6 step 2 (FR-019, INC-14): "include a short, factual
+ * description of the pattern (e.g., naming the toll road matched) for the
+ * frontend to present as FR-019's question." Section 5.1's `analyzeTollUsage`
+ * signature is fixed to `{ usesTollRoad, hasExitReentry }` with no
+ * description field, so this is a small sibling helper over the same step
+ * list rather than a change to that signature -- `tollReentryChecker.ts`
+ * calls both.
+ *
+ * **Judgment call (flagged for tech-lead/designer awareness, not decided
+ * unilaterally as a business rule):** ux-spec.md section 5a.2's mockup shows
+ * the pattern line rendered as "Uses Highway 407 — exits and re-enters it
+ * during this trip." Section 5a.2's own text says the frontend renders
+ * `tollReentryDescription` "wrapped in a short fixed lead-in ('Uses {highway}
+ * — {description}')" but design.md's response contract (section 5.2) only
+ * has room for a single `tollReentryDescription?: string` field -- there is
+ * no separate `highway` field for the frontend to interpolate into that
+ * template. Dev's reading: the fixed lead-in is literally just the word
+ * "Uses " (a client-side constant, ux-spec.md's own precedent for fixed
+ * copy elsewhere in section 5a), and this function's return value already
+ * contains everything after it ("Highway 407 — exits and re-enters it during
+ * this trip"), so `"Uses " + tollReentryDescription` reproduces the mockup's
+ * exact copy without inventing a second response field design.md never
+ * defined. See docs/handoff.md's INC-14 section for the full reasoning.
+ *
+ * Returns `undefined` if no toll-road pattern from the fixed identifier list
+ * above matched any step -- defensive; callers only invoke this after
+ * `analyzeTollUsage` has already reported `hasExitReentry: true`, which
+ * implies at least one step matched, but this function does not assume that
+ * invariant holds.
+ */
+export function describeTollRoadReentry(steps: DirectionStep[]): string | undefined {
+  for (const step of steps) {
+    const name = matchedTollRoadName(step);
+    if (name) return `${name} — exits and re-enters it during this trip`;
+  }
+  return undefined;
 }

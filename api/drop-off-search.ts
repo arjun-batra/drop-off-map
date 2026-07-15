@@ -1,91 +1,39 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { randomUUID } from "node:crypto";
 import { AuthGate } from "../src/auth/authGate.js";
-import { CandidateGenerator } from "../src/candidates/candidateGenerator.js";
 import { createDetourEvaluator } from "../src/candidates/detourEvaluator.js";
-import { ShortlistSelector } from "../src/candidates/shortlistSelector.js";
 import { ConfigError, loadConfig } from "../src/config/loader.js";
 import { createGoogleGeocodingService } from "../src/geocoding/googleGeocodingService.js";
 import { labelFinalCandidates } from "../src/geocoding/labelFinalCandidates.js";
 import { RadiusValidator } from "../src/geo/radiusValidator.js";
-import { Ranker } from "../src/ranking/ranker.js";
 import { RoutingProviderError } from "../src/routing/errors.js";
 import { createGoogleDistanceMatrixService } from "../src/routing/googleDistanceMatrixService.js";
 import { createGoogleRoutingService } from "../src/routing/googleRoutingService.js";
-import { analyzeTollUsage } from "../src/routing/tollHighwayRules.js";
+import { toDropOffSearchCandidates } from "../src/search/buildCandidates.js";
+import { parseSearchRequest } from "../src/search/parseSearchRequest.js";
+import { runSearchPipeline } from "../src/search/searchPipeline.js";
 import { DISCLAIMER_TEXT } from "../src/search/types.js";
-import type { DropOffSearchCandidate, DropOffSearchLocation, DropOffSearchRequest } from "../src/search/types.js";
-import { evaluateShortlist } from "../src/transit/evaluateShortlist.js";
+import type { DropOffSearchCandidate } from "../src/search/types.js";
+import { computeTollReentryFlags } from "../src/search/tollReentryPhase.js";
 import { createGoogleTransitService } from "../src/transit/googleTransitDirectionsService.js";
-
-function parseLocation(raw: unknown): DropOffSearchLocation | undefined {
-  if (typeof raw !== "object" || raw === null) return undefined;
-  const candidate = raw as Record<string, unknown>;
-  const { lat, lng, label } = candidate;
-  if (typeof lat !== "number" || !Number.isFinite(lat)) return undefined;
-  if (typeof lng !== "number" || !Number.isFinite(lng)) return undefined;
-  if (typeof label !== "string" || label.trim() === "") return undefined;
-  return { lat, lng, label };
-}
-
-function parseMaxDetourMinutes(raw: unknown): number | undefined {
-  // FR-002 / design.md section 1.3: numeric, positive, deliberately no upper bound.
-  return typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : undefined;
-}
-
-/**
- * FR-018/design.md section 5.2 (INC-13). Judgment call, flagged for
- * tech-lead confirmation: design.md section 5.2's own comment on this field
- * -- "default false, no server default/config" -- reads two ways: (a) the
- * server must hard-require the field's presence (matching how
- * `maxDetourMinutes`, which genuinely has no sensible default, is treated
- * below), or (b) "no server default/config" only means the value isn't
- * sourced from `AppConfig` (unlike, say, `maxCandidatesReturned`), not that
- * an absent field must be rejected. Reading (a) would break every existing
- * request the full pre-INC-13 regression suite sends (none of which include
- * `avoidTolls` at all), directly contradicting this increment's own
- * "QA can test" line in design.md section 10 ("unchecked-checkbox behavior
- * is unaffected -- full regression pass against the existing
- * ranked/fallback/no_viable_option suite"). Dev is taking reading (b): a
- * missing `avoidTolls` field defaults to `false` (the checkbox's own
- * unchecked default), so the full regression suite is genuinely unaffected;
- * only a field that IS present but isn't a boolean (a real shape violation,
- * e.g. a string) fails validation as `invalid_input`.
- */
-function parseAvoidTolls(raw: unknown): boolean | undefined {
-  if (raw === undefined) return false;
-  return typeof raw === "boolean" ? raw : undefined;
-}
-
-function parseSearchRequest(body: unknown): DropOffSearchRequest | undefined {
-  if (typeof body !== "object" || body === null) return undefined;
-  const raw = body as Record<string, unknown>;
-
-  const start = parseLocation(raw.start);
-  const driverDestination = parseLocation(raw.driverDestination);
-  const passengerDestination = parseLocation(raw.passengerDestination);
-  const maxDetourMinutes = parseMaxDetourMinutes(raw.maxDetourMinutes);
-  const avoidTolls = parseAvoidTolls(raw.avoidTolls);
-
-  if (
-    !start ||
-    !driverDestination ||
-    !passengerDestination ||
-    maxDetourMinutes === undefined ||
-    avoidTolls === undefined
-  ) {
-    return undefined;
-  }
-
-  return { start, driverDestination, passengerDestination, maxDetourMinutes, avoidTolls };
-}
 
 /**
  * POST /api/drop-off-search -- design.md section 5.2, the final search
  * endpoint (INC-6). Assembles every phase built in INC-3 through INC-5 plus
- * this increment's Ranker: direct route -> raw candidates -> batched detour
+ * the Ranker (INC-6): direct route -> raw candidates -> batched detour
  * evaluation -> shortlist -> transit evaluation -> rank/fallback/no-viable
- * -> reverse-geocoded labels for only the final returned candidates.
+ * -> reverse-geocoded labels for only the final returned candidates ->
+ * (INC-14, FR-019) toll re-entry confirmation flags for the same final set.
+ *
+ * INC-14 (FR-019): Phases 0-4 (the shared `runSearchPipeline`, section 4) are
+ * now extracted into `src/search/searchPipeline.ts` so this endpoint and the
+ * new `POST /api/drop-off-search/confirm-toll-reentry` endpoint
+ * (design.md section 5.2, section 4.6's Phase 5) share the exact same
+ * orchestration rather than two independently-maintained copies. This
+ * endpoint always runs Phase 5 (`computeTollReentryFlags`) over *every*
+ * final candidate when `avoidTolls === false` -- nothing has been asked
+ * about yet, unlike the confirm endpoint, which only checks newly-promoted
+ * candidates (section 4.6 step 4).
  *
  * INC-8/REV-013: the temporary INC-3/4/5 debug endpoints
  * (`/api/route/direct`, `/api/candidates/evaluate`, `/api/candidates/transit`)
@@ -198,15 +146,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   const orchestrationDeadline = new Date(requestStart + config.responseTimeTargetSeconds * 1000);
 
   try {
-    const directRoute = await routingService.getDirectRoute(start, driverDestination, avoidTolls);
+    const outcome = await runSearchPipeline(
+      { routingService, detourEvaluator, transitEvaluator },
+      { start, driverDestination, passengerDestination, maxDetourMinutes, avoidTolls, config, orchestrationDeadline },
+    );
 
-    // FR-018/OQ-9, design.md section 4.1a (INC-13): when the "avoid tolls"
-    // checkbox is checked, verify the best-effort avoid=tolls baseline route
-    // actually cleared a known toll road (DEC-5 -- Google's avoid=tolls is a
-    // preference, not a guarantee). If it still uses one, no reasonably
-    // toll-free route exists between start/driverDestination at all --
-    // short-circuit before Phase 1 (candidate generation) ever runs.
-    if (avoidTolls && analyzeTollUsage(directRoute.steps).usesTollRoad) {
+    if (outcome.kind === "no_toll_free_route") {
       res.status(200).json({
         status: "no_toll_free_route",
         candidates: [],
@@ -218,27 +163,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
-    const rawCandidates = CandidateGenerator.sampleAlongPolyline(directRoute.polyline, directRoute.steps, config);
-    const evaluatedCandidates = await detourEvaluator.batchEvaluate(
-      start,
-      driverDestination,
-      directRoute.durationMinutes,
-      rawCandidates,
-      maxDetourMinutes,
-      avoidTolls,
-      config,
-    );
-    const shortlist = ShortlistSelector.select(evaluatedCandidates, config);
-
-    let skippedDueToTimeout = 0;
-    const fullyEvaluated = await evaluateShortlist(transitEvaluator, shortlist, passengerDestination, config, {
-      deadline: orchestrationDeadline,
-      onSkippedDueToDeadline: () => {
-        skippedDueToTimeout++;
-      },
-    });
-
-    const ranked = Ranker.rank(fullyEvaluated, maxDetourMinutes, config);
+    const { ranked, route, timedOut } = outcome;
 
     if (ranked.status === "no_viable_option") {
       // design.md section 6.3: if the orchestration deadline was exceeded
@@ -247,7 +172,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       // business outcome -- report it distinctly so the frontend can invite
       // a retry (design.md section 8) instead of implying the trip has no
       // viable drop-off point at all.
-      if (shortlist.length > 0 && skippedDueToTimeout === shortlist.length) {
+      if (timedOut) {
         res.status(200).json({
           status: "timeout",
           candidates: [],
@@ -269,31 +194,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
+    // design.md section 4.6/5.1 (FR-019, INC-14): Phase 5 runs only when
+    // avoidTolls === false, over every one of Phase 4's final candidates --
+    // nothing has been asked about yet on this, the first search response.
+    const tollFlagsByKey = avoidTolls
+      ? new Map()
+      : await computeTollReentryFlags(
+          routingService,
+          start,
+          driverDestination,
+          ranked.results.map((candidate) => candidate.point),
+          config.providerConcurrencyLimit,
+        );
+
     // Labels are generated only for this small final set (design.md section
     // 3.1b/4.5), never the full raw/shortlist pool.
     const labeled = await labelFinalCandidates(geocodingService, start, ranked.results);
-    const candidates: DropOffSearchCandidate[] = labeled.map((candidate, index) => ({
-      rank: index + 1,
-      location: candidate.point,
-      label: candidate.label,
-      routeOrderIndex: candidate.routeOrderIndex,
-      driveTimeToDropoffMinutes: candidate.driveTimeToCandidateMinutes,
-      detourMinutes: candidate.detourMinutes,
-      walkTimeMinutes: candidate.walkTimeMinutes,
-      waitTimeMinutes: candidate.waitTimeMinutes,
-      transitTimeMinutes: candidate.transitTimeMinutes,
-      passengerTotalTimeMinutes: candidate.passengerTotalTimeMinutes,
-      // FR-006f: trivial sum, correctly left uncomputed until this increment
-      // per design.md's INC-5 "Covers" line.
-      driverTotalTimeMinutes: candidate.driveTimeToCandidateMinutes + candidate.driveTimeFromCandidateMinutes,
-      exceedsThreshold: !candidate.qualifies,
-      // FR-021 (INC-12): threaded straight through from FullyEvaluatedCandidate
-      // (src/transit/types.ts) -- undefined/undefined for a walking-only
-      // candidate (DEC-3), present for every candidate in this array, not
-      // only rank 1.
-      boardingStop: candidate.boardingStop,
-      arrivalStop: candidate.arrivalStop,
-    }));
+    const candidates: DropOffSearchCandidate[] = toDropOffSearchCandidates(labeled, tollFlagsByKey);
 
     if (ranked.status === "fallback") {
       res.status(200).json({
@@ -307,7 +224,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         // same request's RoutingService call (INC-3) -- reusing it here adds
         // no new provider call, it just exposes already-fetched data to the
         // frontend's optional map view (design.md section 3.1a/10).
-        route: directRoute.polyline,
+        route,
         requestId,
         timingMs: Date.now() - requestStart,
       });
@@ -318,7 +235,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       status: "ranked",
       candidates,
       disclaimer: DISCLAIMER_TEXT,
-      route: directRoute.polyline,
+      route,
       requestId,
       timingMs: Date.now() - requestStart,
     });
@@ -326,7 +243,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     // Same sanitized-error pattern as every prior endpoint's REV-009 fix --
     // never forward the raw provider error message to the client. Every
     // provider call in this pipeline (Directions driving, Distance Matrix,
-    // Directions transit, Geocoding reverse lookup for labels) can throw;
+    // Directions transit, Geocoding reverse lookup for labels, and (INC-14)
+    // the toll re-entry check's own Directions-with-steps calls) can throw;
     // the reverse-geocode label step deliberately does NOT throw per-candidate
     // (see labelFinalCandidates.ts's own try/catch), so any error reaching
     // here is a genuine whole-request provider failure.

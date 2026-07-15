@@ -23,11 +23,19 @@ export interface DropOffSearchRequest {
   maxDetourMinutes: number;
   /**
    * FR-018 (2026-07-12, INC-13, design.md section 5.2): the "avoid tolls"
-   * checkbox value. Per-session/per-request user input, default `false`
-   * client-side (ux-spec.md section 4.2a) -- deliberately no server-side
-   * default/config fallback (design.md section 5.2's own comment); a request
-   * missing this field or sending a non-boolean value fails shape validation
-   * (`invalid_input`), same treatment as the other four fields.
+   * checkbox value. Per-session/per-request user input (design.md section
+   * 5.2's "no server default/config" comment means this value is never
+   * sourced from `AppConfig`, not that the field is hard-required -- see
+   * `src/search/parseSearchRequest.ts`'s `parseAvoidTolls` for the actual
+   * validation rule and its reasoning).
+   *
+   * **Actual server behavior (REV-024, INC-14 -- corrected from a prior
+   * version of this comment that asserted the opposite):** a request that
+   * omits this field entirely defaults to `false` (the checkbox's own
+   * unchecked default, ux-spec.md section 4.2a), so every pre-INC-13 request
+   * shape remains valid. Only a field that IS present but is not a boolean
+   * (a genuine shape violation, e.g. a string or number) fails validation as
+   * `invalid_input`.
    */
   avoidTolls: boolean;
 }
@@ -83,6 +91,33 @@ export interface DropOffSearchCandidate {
    */
   boardingStop?: TransitStopDetail;
   arrivalStop?: TransitStopDetail;
+  /**
+   * FR-019 (2026-07-12, INC-14, design.md section 4.6/5.2): present (`true`)
+   * only when `avoidTolls === false` and this candidate's actual driven route
+   * (`start -> candidate -> driverDestination`, not the non-stop baseline)
+   * exits and later re-enters a toll road within the trip
+   * (`analyzeTollUsage`'s `hasExitReentry`, design.md section 4.7).
+   * `undefined` for every other candidate -- both "never checked because
+   * `avoidTolls === true`" and "checked, no re-entry pattern found" collapse
+   * to the same `undefined`, since the frontend only needs to distinguish
+   * "needs a yes/no answer or carries the round-cap disclosure" from
+   * "nothing to say," not those two negative cases from each other.
+   *
+   * There is no separate top-level `DropOffSearchResponse` flag summarizing
+   * "some candidate needs confirmation" (judgment call, INC-14): design.md's
+   * documented response contract (section 5.2) only defines this
+   * per-candidate field, not a response-level one, and ux-spec.md section
+   * 5a.0 itself derives "show Screen 2a" from scanning
+   * `response.candidates` for this flag ("the search response flags one or
+   * more final candidates with `needsTollReentryConfirmation: true`") rather
+   * than naming a separate summary field -- so the frontend computes
+   * `response.candidates.some(c => c.needsTollReentryConfirmation)` itself
+   * (see `src/frontend/components/SearchFlow.tsx`) rather than this type
+   * inventing an undocumented field.
+   */
+  needsTollReentryConfirmation?: boolean;
+  /** FR-019 (INC-14): factual pattern description, e.g. "Highway 407 — exits and re-enters it during this trip" (design.md section 4.6 step 2). Present only alongside `needsTollReentryConfirmation: true`. */
+  tollReentryDescription?: string;
 }
 
 /**
@@ -136,3 +171,36 @@ export interface DropOffSearchResponse {
    */
   route?: Array<{ lat: number; lng: number }>;
 }
+
+/**
+ * Mirrors design.md section 5.2's `ConfirmTollReentryRequest` (FR-019/OQ-10,
+ * INC-14) -- the request body for the new, stateless
+ * `POST /api/drop-off-search/confirm-toll-reentry` endpoint.
+ */
+export interface ConfirmTollReentryRequest {
+  /**
+   * The identical original search request -- this app remains fully
+   * stateless (NFR-003); no server-side candidate-pool session is kept
+   * between the initial search and this confirm call. ux-spec.md section
+   * 5a.4: on a second confirmation round, this is still the *original*
+   * request the user first submitted, not the previous round's response.
+   */
+  originalRequest: DropOffSearchRequest;
+  /**
+   * The candidate location(s) the user found the toll re-entry pattern
+   * unacceptable for (OQ-10: excluded entirely, no targeted recalculation).
+   * ux-spec.md section 5a.4: on a second confirmation round, this is the
+   * full *cumulative* rejection set (round 1's "No" answers plus round 2's),
+   * not just the newest round's answers -- this endpoint re-derives the
+   * whole search deterministically from `originalRequest` every time, so
+   * there is no partial/incremental state to track server-side.
+   */
+  rejectedCandidateLocations: Array<{ lat: number; lng: number }>;
+}
+
+/**
+ * Mirrors design.md section 5.2: "Same shape as `DropOffSearchResponse`
+ * above (including the possibility that a newly-promoted candidate now
+ * itself carries `needsTollReentryConfirmation: true`...)."
+ */
+export type ConfirmTollReentryResponse = DropOffSearchResponse;

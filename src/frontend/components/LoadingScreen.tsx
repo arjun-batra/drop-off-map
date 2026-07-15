@@ -13,6 +13,14 @@ interface LoadingScreenProps {
    * server-side").
    */
   responseTimeTargetSeconds: number;
+  /**
+   * ux-spec.md section 5.1 (FR-019, INC-14): this same screen is reused --
+   * not a new screen -- while `POST /api/drop-off-search/confirm-toll-reentry`
+   * runs after the user answers the Toll Road Check screen. Only the copy
+   * differs; the spinner/"Cancel" affordance/still-working timer are
+   * unchanged. Defaults to "search" so every pre-INC-14 caller is unaffected.
+   */
+  variant?: "search" | "confirm";
 }
 
 /**
@@ -28,7 +36,7 @@ interface LoadingScreenProps {
  * only the copy change while still waiting, per ux-spec.md's explicit "do
  * not show an error until the request actually fails" rule).
  */
-export function LoadingScreen({ onCancel, responseTimeTargetSeconds }: LoadingScreenProps) {
+export function LoadingScreen({ onCancel, responseTimeTargetSeconds, variant = "search" }: LoadingScreenProps) {
   const [stillWorking, setStillWorking] = useState(false);
 
   useEffect(() => {
@@ -39,13 +47,22 @@ export function LoadingScreen({ onCancel, responseTimeTargetSeconds }: LoadingSc
     return () => window.clearTimeout(timer);
   }, [responseTimeTargetSeconds]);
 
+  const title =
+    variant === "confirm"
+      ? "Updating your results…"
+      : "Finding the best drop-off points along your route…";
+  const secondaryDefault =
+    variant === "confirm"
+      ? "Removing the option(s) you didn't want and re-checking what's left."
+      : "Checking live traffic and transit data.";
+
   return (
     <div className="app-shell">
       <div className="app-shell__container loading-screen">
         <div className="loading-screen__spinner" role="status" aria-label="Loading" />
-        <h2 className="type-h2">Finding the best drop-off points along your route…</h2>
+        <h2 className="type-h2">{title}</h2>
         <p className="type-body-small loading-screen__secondary">
-          {stillWorking ? "Still working — this is taking a little longer than usual." : "Checking live traffic and transit data."}
+          {stillWorking ? "Still working — this is taking a little longer than usual." : secondaryDefault}
         </p>
         <button type="button" className="type-body loading-screen__cancel" onClick={onCancel}>
           Cancel

@@ -13,6 +13,17 @@
   margin: 0;
 }
 
+/*
+ * results-screen__toll-excluded-notice: FR-019 (INC-14, ux-spec.md section
+ * 6.4a) -- plain informational line, not a warning (no colored background,
+ * no icon), since this is expected/requested behavior resulting from the
+ * user's own prior "No" answer, not a degraded state.
+ */
+.results-screen__toll-excluded-notice {
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+
 .results-screen__warning-banner {
   background: var(--color-warning-bg);
   border: 1px solid var(--color-warning-border);
@@ -152,6 +163,18 @@
 }
 
 .results-screen__card-title {
+  margin: 0;
+}
+
+/*
+ * results-screen__toll-unconfirmed-disclosure: FR-019 (INC-14, ux-spec.md
+ * section 5a.4/6.4 item 7) -- the round-cap residual candidate's per-card
+ * disclosure. Neutral informational text (not a warning/danger state, per
+ * section 5a.4's explicit styling note): type-body-small, secondary text
+ * color, no icon, no colored background.
+ */
+.results-screen__toll-unconfirmed-disclosure {
+  color: var(--color-text-secondary);
   margin: 0;
 }
 

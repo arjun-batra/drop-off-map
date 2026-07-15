@@ -15,6 +15,16 @@ interface ResultsScreenProps {
   onTryAgain: () => void;
   /** INC-10: only the Google Maps JS API key the map panel needs, not the full PublicConfig. */
   mapConfig: Pick<PublicConfig, "googleMapsJsApiKey">;
+  /**
+   * FR-019 (INC-14, ux-spec.md section 6.4a): number of candidates excluded
+   * via the Toll Road Check flow (`confirm-toll-reentry`'s
+   * `rejectedCandidateLocations`). Undefined (not `0`) when this Results
+   * screen was reached via a first-pass search that never triggered the
+   * toll-reentry flow at all -- the notice below is shown only when this is
+   * a positive number, per section 6.4a's "never shown on a first-pass
+   * search that never triggered [it] at all" rule.
+   */
+  excludedCandidateCount?: number;
 }
 
 function formatMinutes(value: number): string {
@@ -60,7 +70,20 @@ function emptyStateTitle(status: DropOffSearchResponse["status"]): string {
  * wrapping this component, so a crash anywhere in here can never hide the
  * disclaimer (REV-012).
  */
-export function ResultsScreen({ response, request, onEditSearch, onTryAgain, mapConfig }: ResultsScreenProps) {
+function excludedCandidateNoticeText(count: number): string {
+  return count === 1
+    ? "1 option was hidden because it exits and re-enters a toll highway during the trip, per your answer."
+    : `${count} options were hidden because they exit and re-enter a toll highway during the trip, per your answer.`;
+}
+
+export function ResultsScreen({
+  response,
+  request,
+  onEditSearch,
+  onTryAgain,
+  mapConfig,
+  excludedCandidateCount,
+}: ResultsScreenProps) {
   const isMessageOnly =
     response.status === "no_viable_option" ||
     response.status === "out_of_service_area" ||
@@ -100,6 +123,21 @@ export function ResultsScreen({ response, request, onEditSearch, onTryAgain, map
           <br />
           Passenger to: {request.passengerDestination.label}
         </p>
+
+        {/*
+          FR-019 (INC-14, ux-spec.md section 6.4a): only ever rendered when
+          this Results screen was reached via the confirm-toll-reentry flow
+          with a non-empty rejection set -- never on a first-pass search
+          (excludedCandidateCount is undefined, not 0, in that case). Plain
+          informational styling (not a warning), per section 6.4a's own
+          reasoning: this is expected, requested behavior resulting directly
+          from the user's own prior answer, not a degraded state.
+        */}
+        {!!excludedCandidateCount && excludedCandidateCount > 0 && (
+          <p className="type-body-small results-screen__toll-excluded-notice">
+            {excludedCandidateNoticeText(excludedCandidateCount)}
+          </p>
+        )}
 
         {isMessageOnly && (
           <div className="results-screen__empty-state">
@@ -234,6 +272,22 @@ function CandidateCard({ candidate, isFallback, highlighted }: CandidateCardProp
         </div>
 
         <h2 className="type-h2 results-screen__card-title">{candidate.label}</h2>
+
+        {/*
+          FR-019 (INC-14, ux-spec.md section 5a.4/6.4 item 7): the round-cap
+          residual case -- a candidate whose toll re-entry status was never
+          confirmed because the two-round cap was reached before it could be
+          asked about (SearchFlow.tsx only reaches Results with this flag
+          still true in exactly that case). Neutral informational copy, not
+          a warning -- deliberately does not say the pattern was accepted or
+          rejected.
+        */}
+        {candidate.needsTollReentryConfirmation && (
+          <p className="type-body-small results-screen__toll-unconfirmed-disclosure">
+            This option uses a toll highway that exits and re-enters during the trip. We weren't able to ask you
+            about it — your answer for the other option(s) doesn't apply here.
+          </p>
+        )}
 
         <div className="results-screen__headline">
           <span

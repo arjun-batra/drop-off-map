@@ -1,6 +1,6 @@
 import type { PublicConfig } from "../config/schema";
 import type { GeoResult } from "../geocoding/types";
-import type { DropOffSearchRequest, DropOffSearchResponse } from "../search/types";
+import type { ConfirmTollReentryRequest, DropOffSearchRequest, DropOffSearchResponse } from "../search/types";
 
 export interface VerifyPasswordResult {
   ok: boolean;
@@ -88,6 +88,44 @@ export async function searchDropOffPoints(
 ): Promise<SearchOutcome> {
   try {
     const res = await fetch("/api/drop-off-search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify(request),
+      signal,
+    });
+
+    if (res.status === 401) {
+      return { ok: false, errorCode: "unauthorized" };
+    }
+    if (!res.ok) {
+      return { ok: false, errorCode: "provider_error" };
+    }
+
+    const body = (await res.json()) as DropOffSearchResponse;
+    return { ok: true, response: body };
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      return { ok: false, errorCode: "aborted" };
+    }
+    return { ok: false, errorCode: "network_error" };
+  }
+}
+
+/**
+ * POST /api/drop-off-search/confirm-toll-reentry -- design.md section 5.2
+ * (FR-019/OQ-10, INC-14), ux-spec.md section 5a.3. Same outcome shape/error
+ * handling as `searchDropOffPoints` above (a well-formed business outcome is
+ * always a 200 with a `DropOffSearchResponse`-shaped body -- this endpoint's
+ * response is documented as `ConfirmTollReentryResponse = DropOffSearchResponse`,
+ * design.md section 5.2).
+ */
+export async function confirmTollReentry(
+  request: ConfirmTollReentryRequest,
+  signal?: AbortSignal,
+): Promise<SearchOutcome> {
+  try {
+    const res = await fetch("/api/drop-off-search/confirm-toll-reentry", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "same-origin",
