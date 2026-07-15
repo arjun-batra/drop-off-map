@@ -516,6 +516,9 @@ describe("InputScreen -- FR-001, FR-003, FR-004, FR-015, NFR-006", () => {
         driverDestination: { lat: NEARBY_RESULT.lat, lng: NEARBY_RESULT.lng, label: NEARBY_RESULT.label },
         passengerDestination: { lat: NEARBY_RESULT.lat, lng: NEARBY_RESULT.lng, label: NEARBY_RESULT.label },
         maxDetourMinutes: 15,
+        // FR-018 (INC-13): the checkbox's own unchecked default, always sent
+        // explicitly (not omitted) once the form actually submits.
+        avoidTolls: false,
       });
     });
 
@@ -557,6 +560,119 @@ describe("InputScreen -- FR-001, FR-003, FR-004, FR-015, NFR-006", () => {
       expect(fieldInput("Your start point").value).toBe(NEARBY_RESULT.label);
       const detourInput = container.querySelector("#max-detour-input") as HTMLInputElement;
       expect(detourInput.value).toBe("20");
+    });
+  });
+
+  describe("FR-018 (INC-13, ux-spec.md section 4.2a): 'Avoid tolls' checkbox", () => {
+    function avoidTollsCheckbox(): HTMLInputElement {
+      return container.querySelector("#avoid-tolls-checkbox") as HTMLInputElement;
+    }
+
+    it("renders unchecked by default (FR-018's stated default)", () => {
+      render();
+      expect(avoidTollsCheckbox()).not.toBeNull();
+      expect(avoidTollsCheckbox().checked).toBe(false);
+    });
+
+    it("checking the checkbox and submitting includes avoidTolls:true in the request", async () => {
+      mockGeocodeFetch({ "456 Bay": [{ lat: NEARBY_RESULT.lat, lng: NEARBY_RESULT.lng, label: NEARBY_RESULT.label }] });
+      render();
+
+      for (const label of ["Your start point", "Your destination", "Passenger's destination"]) {
+        const input = fieldInput(label);
+        act(() => setValue(input, "456 Bay"));
+        await advance(300);
+        await flush();
+        const option = container.querySelector('li[role="option"]') as HTMLElement;
+        act(() => option.dispatchEvent(new Event("mousedown", { bubbles: true, cancelable: true })));
+        await flush();
+      }
+      const detourInput = container.querySelector("#max-detour-input") as HTMLInputElement;
+      act(() => setValue(detourInput, "15"));
+
+      act(() => {
+        avoidTollsCheckbox().click();
+      });
+      expect(avoidTollsCheckbox().checked).toBe(true);
+
+      const cta = Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent === "Find drop-off points",
+      ) as HTMLButtonElement;
+      act(() => cta.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+      expect(onSubmitSpy).toHaveBeenCalledTimes(1);
+      const request = onSubmitSpy.mock.calls[0]?.[0];
+      expect(request.avoidTolls).toBe(true);
+    });
+
+    it("leaving the checkbox unchecked submits avoidTolls:false explicitly (not omitted)", async () => {
+      mockGeocodeFetch({ "456 Bay": [{ lat: NEARBY_RESULT.lat, lng: NEARBY_RESULT.lng, label: NEARBY_RESULT.label }] });
+      render();
+
+      for (const label of ["Your start point", "Your destination", "Passenger's destination"]) {
+        const input = fieldInput(label);
+        act(() => setValue(input, "456 Bay"));
+        await advance(300);
+        await flush();
+        const option = container.querySelector('li[role="option"]') as HTMLElement;
+        act(() => option.dispatchEvent(new Event("mousedown", { bubbles: true, cancelable: true })));
+        await flush();
+      }
+      const detourInput = container.querySelector("#max-detour-input") as HTMLInputElement;
+      act(() => setValue(detourInput, "15"));
+
+      const cta = Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent === "Find drop-off points",
+      ) as HTMLButtonElement;
+      act(() => cta.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+      const request = onSubmitSpy.mock.calls[0]?.[0];
+      expect(Object.prototype.hasOwnProperty.call(request, "avoidTolls")).toBe(true);
+      expect(request.avoidTolls).toBe(false);
+    });
+
+    it("initialValues with avoidTolls:true (Edit search reseed) pre-checks the checkbox", () => {
+      render(baseConfig, {
+        start: NEARBY_RESULT,
+        driverDestination: NEARBY_RESULT,
+        passengerDestination: NEARBY_RESULT,
+        maxDetourMinutesText: "20",
+        avoidTolls: true,
+      });
+
+      expect(avoidTollsCheckbox().checked).toBe(true);
+    });
+
+    it("initialValues without avoidTolls at all (e.g. a caller predating this field) still defaults the checkbox to unchecked, not crashing", () => {
+      render(baseConfig, {
+        start: NEARBY_RESULT,
+        driverDestination: NEARBY_RESULT,
+        passengerDestination: NEARBY_RESULT,
+        maxDetourMinutesText: "20",
+      });
+
+      expect(avoidTollsCheckbox().checked).toBe(false);
+    });
+
+    it("NFR-003: a fresh mount (no initialValues -- e.g. a new session) never carries over a checked state from a prior instance", () => {
+      render(baseConfig, {
+        start: NEARBY_RESULT,
+        driverDestination: NEARBY_RESULT,
+        passengerDestination: NEARBY_RESULT,
+        maxDetourMinutesText: "20",
+        avoidTolls: true,
+      });
+      expect(avoidTollsCheckbox().checked).toBe(true);
+
+      // Unmount and remount as a brand-new instance with no initialValues --
+      // simulates a fresh session (no persistence layer, NFR-003).
+      act(() => root.unmount());
+      container.remove();
+      container = document.createElement("div");
+      document.body.appendChild(container);
+      render();
+
+      expect(avoidTollsCheckbox().checked).toBe(false);
     });
   });
 

@@ -960,4 +960,188 @@ describe("POST /api/drop-off-search -- FR-006f, FR-010, FR-011, FR-012, FR-013",
       consoleErrorSpy.mockRestore();
     });
   });
+
+  describe("FR-018 'avoid tolls' checkbox + hard exclusion, end-to-end through the real endpoint (INC-13, DEC-5)", () => {
+    function callsMatching(fetchSpy: unknown, predicate: (url: URL) => boolean): string[] {
+      const calls = (fetchSpy as { mock: { calls: [string][] } }).mock.calls;
+      return calls.filter(([url]) => predicate(new URL(url))).map(([url]) => url);
+    }
+
+    const drivingDirectionsPredicate = (u: URL) => u.pathname.includes("/directions/") && u.searchParams.get("mode") !== "transit";
+    const distanceMatrixPredicate = (u: URL) => u.pathname.includes("/distancematrix/");
+    const transitPredicate = (u: URL) => u.pathname.includes("/directions/") && u.searchParams.get("mode") === "transit";
+
+    it("backward compatibility: requestBody() sends no avoidTolls field at all, and every pre-existing scenario is unaffected (dev's own judgment-call claim, independently verified)", async () => {
+      applyEnv(validEnv());
+      vi.stubGlobal("fetch", makeFetchRouter({}));
+
+      const body = requestBody();
+      // Confirms the fixture genuinely omits the field (not merely undefined-valued) --
+      // this is the literal shape every pre-INC-13 test in this file already sends.
+      expect(Object.prototype.hasOwnProperty.call(body, "avoidTolls")).toBe(false);
+
+      const { req, res, statusCode, jsonBody } = createMock({ method: "POST", body });
+      await handler(req, res);
+
+      expect(statusCode()).toBe(200);
+      expect((jsonBody() as DropOffSearchResponse).status).toBe("ranked");
+    });
+
+    it("avoidTolls=true threads avoid=tolls onto the direct-route call AND both Distance Matrix legs of EVERY batch (not just the first)", async () => {
+      // Small batch size forces multiple Distance Matrix batches from the
+      // ~10 raw candidates this fixture's route generates, so "every batch"
+      // is genuinely exercised, not just a single-batch coincidence.
+      applyEnv(validEnv({ DISTANCE_MATRIX_BATCH_SIZE: "3" }));
+      const fetchSpy = makeFetchRouter({});
+      vi.stubGlobal("fetch", fetchSpy);
+
+      const { req, res, jsonBody } = createMock({ method: "POST", body: requestBody({ avoidTolls: true }) });
+      await handler(req, res);
+
+      expect((jsonBody() as DropOffSearchResponse).status).toBe("ranked");
+
+      const drivingUrls = callsMatching(fetchSpy, drivingDirectionsPredicate);
+      const dmUrls = callsMatching(fetchSpy, distanceMatrixPredicate);
+
+      expect(drivingUrls).toHaveLength(1);
+      expect(dmUrls.length).toBeGreaterThan(2); // confirms multiple batches were actually issued
+      for (const url of [...drivingUrls, ...dmUrls]) {
+        expect(new URL(url).searchParams.get("avoid")).toBe("tolls");
+      }
+    });
+
+    it("avoidTolls=false (explicit) -- avoid param absent from every driving/Distance-Matrix call", async () => {
+      applyEnv(validEnv({ DISTANCE_MATRIX_BATCH_SIZE: "3" }));
+      const fetchSpy = makeFetchRouter({});
+      vi.stubGlobal("fetch", fetchSpy);
+
+      const { req, res, jsonBody } = createMock({ method: "POST", body: requestBody({ avoidTolls: false }) });
+      await handler(req, res);
+
+      expect((jsonBody() as DropOffSearchResponse).status).toBe("ranked");
+
+      const drivingUrls = callsMatching(fetchSpy, drivingDirectionsPredicate);
+      const dmUrls = callsMatching(fetchSpy, distanceMatrixPredicate);
+      expect(drivingUrls.length + dmUrls.length).toBeGreaterThan(2);
+      for (const url of [...drivingUrls, ...dmUrls]) {
+        expect(new URL(url).searchParams.has("avoid")).toBe(false);
+      }
+    });
+
+    it("transit-mode calls never carry avoid=tolls even when avoidTolls=true -- FR-018's explicit driver-route-only scope, passenger transit untouched", async () => {
+      applyEnv(validEnv());
+      const fetchSpy = makeFetchRouter({});
+      vi.stubGlobal("fetch", fetchSpy);
+
+      const { req, res, jsonBody } = createMock({ method: "POST", body: requestBody({ avoidTolls: true }) });
+      await handler(req, res);
+      expect((jsonBody() as DropOffSearchResponse).status).toBe("ranked");
+
+      const transitUrls = callsMatching(fetchSpy, transitPredicate);
+      expect(transitUrls.length).toBeGreaterThan(0); // sanity: transit calls actually happened
+      for (const url of transitUrls) {
+        expect(new URL(url).searchParams.has("avoid")).toBe(false);
+      }
+    });
+
+    it("short-circuit: avoidTolls=true and the best-effort baseline route still traverses Highway 407 -> status:no_toll_free_route, ZERO further provider calls (no Distance Matrix, no transit, no reverse-geocode)", async () => {
+      applyEnv(validEnv());
+      const fetchSpy = makeFetchRouter({
+        drivingSteps: [{ html_instructions: "Merge onto <b>Highway 407</b> E", distance: { value: 10000 } }],
+      });
+      vi.stubGlobal("fetch", fetchSpy);
+
+      const { req, res, statusCode, jsonBody } = createMock({
+        method: "POST",
+        body: requestBody({ avoidTolls: true }),
+      });
+      await handler(req, res);
+
+      expect(statusCode()).toBe(200);
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("no_toll_free_route");
+      expect(body.candidates).toEqual([]);
+      expect(body.message).toBe(
+        "We couldn't find a route that avoids tolls for this trip. Uncheck \"Avoid tolls\" to see toll-inclusive options, or try a different start or destination.",
+      );
+      expect(body.disclaimer).toBeUndefined();
+      expect(body.route).toBeUndefined();
+
+      const drivingUrls = callsMatching(fetchSpy, drivingDirectionsPredicate);
+      const dmUrls = callsMatching(fetchSpy, distanceMatrixPredicate);
+      const transitUrls = callsMatching(fetchSpy, transitPredicate);
+
+      // Only the single direct-baseline call that triggered the short-circuit --
+      // this proves the short-circuit happens BEFORE candidate generation/Phase 1,
+      // not merely that the final status happens to be correct after doing the work anyway.
+      expect(drivingUrls).toHaveLength(1);
+      expect(dmUrls).toHaveLength(0);
+      expect(transitUrls).toHaveLength(0);
+
+      // The direct-baseline call itself did request avoid=tolls (best-effort) --
+      // it simply still traversed a toll road despite the request, per DEC-5.
+      expect(new URL(drivingUrls[0]!).searchParams.get("avoid")).toBe("tolls");
+    });
+
+    it("avoidTolls=true but the baseline route is genuinely toll-free -- ranks normally, is NOT short-circuited", async () => {
+      applyEnv(validEnv());
+      vi.stubGlobal("fetch", makeFetchRouter({}));
+
+      const { req, res, jsonBody } = createMock({ method: "POST", body: requestBody({ avoidTolls: true }) });
+      await handler(req, res);
+
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("ranked");
+      expect(body.candidates.length).toBeGreaterThan(0);
+    });
+
+    it("avoidTolls=true with a route entirely on Highway 401 (limited-access but NOT tolled, per item 3's narrower toll-list distinction) is NOT short-circuited to no_toll_free_route -- the resulting no_viable_option comes from the unrelated FR-020 highway-exclusion rule, not a toll misclassification", async () => {
+      applyEnv(validEnv());
+      const fetchSpy = makeFetchRouter({
+        // Identical fixture to the FR-020 exclusion test above: a single step
+        // spanning the whole route, so every raw candidate is excluded by
+        // isLimitedAccessHighway (FR-020) regardless of avoidTolls. The point
+        // of THIS test is that analyzeTollUsage (FR-018's narrower toll-only
+        // list) must NOT also flag Highway 401 -- if it did, this would
+        // short-circuit to "no_toll_free_route" (zero Distance Matrix calls)
+        // instead of reaching Phase 1/2 and landing on "no_viable_option" via
+        // the FR-020 path (which does attempt Phase 1 before finding nothing
+        // to rank).
+        drivingSteps: [{ html_instructions: "Merge onto <b>Highway 401</b> E", distance: { value: 10000 } }],
+      });
+      vi.stubGlobal("fetch", fetchSpy);
+
+      const { req, res, jsonBody } = createMock({ method: "POST", body: requestBody({ avoidTolls: true }) });
+      await handler(req, res);
+
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).not.toBe("no_toll_free_route");
+      expect(body.status).toBe("no_viable_option");
+      expect(body.message).toBe(
+        "We couldn't find a route with transit access to the passenger's destination along this trip. Try a different destination, or check back later — transit service may vary by time of day.",
+      );
+    });
+
+    it("invalid_input: avoidTolls sent as a non-boolean value (string 'yes') -- a real shape violation, distinct from a missing field", async () => {
+      applyEnv(validEnv());
+      const { req, res, jsonBody } = createMock({ method: "POST", body: requestBody({ avoidTolls: "yes" }) });
+      await handler(req, res);
+      expect((jsonBody() as DropOffSearchResponse).status).toBe("invalid_input");
+    });
+
+    it("invalid_input: avoidTolls sent as a number (1) instead of a boolean", async () => {
+      applyEnv(validEnv());
+      const { req, res, jsonBody } = createMock({ method: "POST", body: requestBody({ avoidTolls: 1 }) });
+      await handler(req, res);
+      expect((jsonBody() as DropOffSearchResponse).status).toBe("invalid_input");
+    });
+
+    it("avoidTolls=false explicitly sent still ranks normally (not merely the omitted-field case)", async () => {
+      applyEnv(validEnv());
+      vi.stubGlobal("fetch", makeFetchRouter({}));
+      const { req, res, jsonBody } = createMock({ method: "POST", body: requestBody({ avoidTolls: false }) });
+      await handler(req, res);
+      expect((jsonBody() as DropOffSearchResponse).status).toBe("ranked");
+    });
+  });
 });

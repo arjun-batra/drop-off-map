@@ -31,6 +31,7 @@ const REQUEST: DropOffSearchRequest = {
   driverDestination: { lat: 43.75, lng: -79.4, label: "456 Bay St" },
   passengerDestination: { lat: 43.78, lng: -79.42, label: "789 King St" },
   maxDetourMinutes: 15,
+  avoidTolls: false,
 };
 
 // Rank 1: forced-expanded (TOP PICK) -- exercises the journey-strip `lg`

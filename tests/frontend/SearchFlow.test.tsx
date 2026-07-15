@@ -219,6 +219,55 @@ describe("SearchFlow -- ux-spec.md Input -> Loading -> Results | Error orchestra
     expect(startInput.value).toBe(RESOLVED.label);
   });
 
+  it("FR-018 (INC-13): 'Edit search' reseeds the 'Avoid tolls' checkbox to match the last-submitted request's value", async () => {
+    render();
+    vi.spyOn(api, "searchDropOffPoints").mockResolvedValue({
+      ok: true,
+      response: { status: "no_viable_option", candidates: [], message: "no luck", requestId: "r1", timingMs: 5 },
+    });
+
+    // Check the box before submitting, so the last-submitted request carries avoidTolls:true.
+    mockGeocodeAlwaysResolves();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    for (const label of ["Your start point", "Your destination", "Passenger's destination"]) {
+      const input = fieldInput(label);
+      act(() => setValue(input, "456 Bay St"));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300);
+      });
+      await flush();
+      const option = container.querySelector('li[role="option"]') as HTMLElement;
+      act(() => option.dispatchEvent(new Event("mousedown", { bubbles: true, cancelable: true })));
+      await flush();
+    }
+    vi.useRealTimers();
+    const detourInput = container.querySelector("#max-detour-input") as HTMLInputElement;
+    act(() => setValue(detourInput, "15"));
+    const avoidTollsCheckbox = container.querySelector("#avoid-tolls-checkbox") as HTMLInputElement;
+    act(() => {
+      avoidTollsCheckbox.click();
+    });
+    expect(avoidTollsCheckbox.checked).toBe(true);
+
+    const cta = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Find drop-off points")!;
+    act(() => {
+      cta.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).toContain("No drop-off points found");
+
+    const editLink = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Edit search"))!;
+    act(() => {
+      editLink.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).toContain("DropSpot");
+    const reseededCheckbox = container.querySelector("#avoid-tolls-checkbox") as HTMLInputElement;
+    expect(reseededCheckbox.checked).toBe(true);
+  });
+
   it('"Try again" from the error screen re-issues the identical request', async () => {
     render();
     const searchSpy = vi

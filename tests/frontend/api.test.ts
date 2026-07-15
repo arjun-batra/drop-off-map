@@ -7,6 +7,7 @@ const REQUEST: DropOffSearchRequest = {
   driverDestination: { lat: 43.75, lng: -79.4, label: "Driver dest" },
   passengerDestination: { lat: 43.78, lng: -79.42, label: "Passenger dest" },
   maxDetourMinutes: 15,
+  avoidTolls: false,
 };
 
 afterEach(() => {

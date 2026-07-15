@@ -52,7 +52,7 @@ describe("createGoogleRoutingService -- FR-006a, FR-007 (live traffic)", () => {
       now: () => fixedNow,
     });
 
-    await service.getDirectRoute(START, DEST);
+    await service.getDirectRoute(START, DEST, false);
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const calledUrl = new URL(fetchSpy.mock.calls[0]![0] as string);
@@ -74,7 +74,7 @@ describe("createGoogleRoutingService -- FR-006a, FR-007 (live traffic)", () => {
       now: () => laterDate,
     });
 
-    await service.getDirectRoute(START, DEST);
+    await service.getDirectRoute(START, DEST, false);
 
     const calledUrl = new URL(fetchSpy.mock.calls[0]![0] as string);
     expect(calledUrl.searchParams.get("departure_time")).toBe(
@@ -88,7 +88,7 @@ describe("createGoogleRoutingService -- FR-006a, FR-007 (live traffic)", () => {
     const fetchSpy = vi.fn(async () => directionsOk({ duration: 600, durationInTraffic: 900 }));
     const service = createGoogleRoutingService({ apiKey: "test-key", fetchImpl: fetchSpy });
 
-    const result = await service.getDirectRoute(START, DEST);
+    const result = await service.getDirectRoute(START, DEST, false);
 
     expect(result.durationMinutes).toBe(15);
     expect(result.durationMinutes).not.toBe(10); // the static-duration value, must NOT be what's returned
@@ -98,7 +98,7 @@ describe("createGoogleRoutingService -- FR-006a, FR-007 (live traffic)", () => {
     const fetchSpy = vi.fn(async () => directionsOk({ duration: 600 }));
     const service = createGoogleRoutingService({ apiKey: "test-key", fetchImpl: fetchSpy });
 
-    const result = await service.getDirectRoute(START, DEST);
+    const result = await service.getDirectRoute(START, DEST, false);
 
     expect(result.durationMinutes).toBe(10);
   });
@@ -107,7 +107,7 @@ describe("createGoogleRoutingService -- FR-006a, FR-007 (live traffic)", () => {
     const fetchSpy = vi.fn(async () => directionsOk({ duration: 600 }));
     const service = createGoogleRoutingService({ apiKey: "test-key", fetchImpl: fetchSpy });
 
-    const result = await service.getDirectRoute(START, DEST);
+    const result = await service.getDirectRoute(START, DEST, false);
 
     expect(result.polyline).toEqual([{ lat: 0, lng: 0 }]);
   });
@@ -116,15 +116,15 @@ describe("createGoogleRoutingService -- FR-006a, FR-007 (live traffic)", () => {
     const fetchSpy = vi.fn(async () => directionsStatus("REQUEST_DENIED", "The provided API key is invalid."));
     const service = createGoogleRoutingService({ apiKey: "bad-key", fetchImpl: fetchSpy });
 
-    await expect(service.getDirectRoute(START, DEST)).rejects.toThrow(RoutingProviderError);
-    await expect(service.getDirectRoute(START, DEST)).rejects.toThrow("The provided API key is invalid.");
+    await expect(service.getDirectRoute(START, DEST, false)).rejects.toThrow(RoutingProviderError);
+    await expect(service.getDirectRoute(START, DEST, false)).rejects.toThrow("The provided API key is invalid.");
   });
 
   it("ZERO_RESULTS (no drivable route) is treated as an error, unlike geocoding's ZERO_RESULTS", async () => {
     const fetchSpy = vi.fn(async () => directionsStatus("ZERO_RESULTS"));
     const service = createGoogleRoutingService({ apiKey: "test-key", fetchImpl: fetchSpy });
 
-    await expect(service.getDirectRoute(START, DEST)).rejects.toThrow(RoutingProviderError);
+    await expect(service.getDirectRoute(START, DEST, false)).rejects.toThrow(RoutingProviderError);
   });
 
   it("a network failure surfaces as RoutingProviderError, not an unhandled rejection", async () => {
@@ -133,28 +133,28 @@ describe("createGoogleRoutingService -- FR-006a, FR-007 (live traffic)", () => {
     });
     const service = createGoogleRoutingService({ apiKey: "test-key", fetchImpl: fetchSpy });
 
-    await expect(service.getDirectRoute(START, DEST)).rejects.toThrow(RoutingProviderError);
+    await expect(service.getDirectRoute(START, DEST, false)).rejects.toThrow(RoutingProviderError);
   });
 
   it("a malformed response shape (missing routes/legs) throws RoutingProviderError rather than crashing", async () => {
     const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ notStatus: true }) }));
     const service = createGoogleRoutingService({ apiKey: "test-key", fetchImpl: fetchSpy });
 
-    await expect(service.getDirectRoute(START, DEST)).rejects.toThrow(RoutingProviderError);
+    await expect(service.getDirectRoute(START, DEST, false)).rejects.toThrow(RoutingProviderError);
   });
 
   it("an HTTP-level failure (non-ok response) throws RoutingProviderError", async () => {
     const fetchSpy = vi.fn(async () => ({ ok: false, status: 500, json: async () => ({}) }));
     const service = createGoogleRoutingService({ apiKey: "test-key", fetchImpl: fetchSpy });
 
-    await expect(service.getDirectRoute(START, DEST)).rejects.toThrow(RoutingProviderError);
+    await expect(service.getDirectRoute(START, DEST, false)).rejects.toThrow(RoutingProviderError);
   });
 
   it("the configured apiKey is forwarded in the request, never a hardcoded/other value", async () => {
     const fetchSpy = vi.fn(async (_url: string) => directionsOk({ duration: 600 }));
     const service = createGoogleRoutingService({ apiKey: "my-specific-configured-key", fetchImpl: fetchSpy });
 
-    await service.getDirectRoute(START, DEST);
+    await service.getDirectRoute(START, DEST, false);
 
     const calledUrl = new URL(fetchSpy.mock.calls[0]![0] as string);
     expect(calledUrl.searchParams.get("key")).toBe("my-specific-configured-key");
@@ -174,7 +174,7 @@ describe("createGoogleRoutingService -- FR-006a, FR-007 (live traffic)", () => {
       );
       const service = createGoogleRoutingService({ apiKey: "test-key", fetchImpl: fetchSpy });
 
-      const result = await service.getDirectRoute(START, DEST);
+      const result = await service.getDirectRoute(START, DEST, false);
 
       // Zero new provider calls: this is the same single Directions call
       // FR-006a/FR-007 already made -- verified via call-count assertion,
@@ -203,7 +203,7 @@ describe("createGoogleRoutingService -- FR-006a, FR-007 (live traffic)", () => {
       const fetchSpy = vi.fn(async () => directionsOk({ duration: 600 })); // no `steps` key at all
       const service = createGoogleRoutingService({ apiKey: "test-key", fetchImpl: fetchSpy });
 
-      const result = await service.getDirectRoute(START, DEST);
+      const result = await service.getDirectRoute(START, DEST, false);
 
       expect(result.steps).toEqual([]);
     });
@@ -218,7 +218,7 @@ describe("createGoogleRoutingService -- FR-006a, FR-007 (live traffic)", () => {
       );
       const service = createGoogleRoutingService({ apiKey: "test-key", fetchImpl: fetchSpy });
 
-      const result = await service.getDirectRoute(START, DEST);
+      const result = await service.getDirectRoute(START, DEST, false);
 
       expect(result.durationMinutes).toBe(15);
       expect(result.steps).toHaveLength(1);
@@ -239,14 +239,14 @@ describe("createGoogleRoutingService -- FR-006a, FR-007 (live traffic)", () => {
       );
       const service = createGoogleRoutingService({ apiKey: "test-key", fetchImpl: fetchSpy as never, timeoutMs: 20 });
 
-      await expect(service.getDirectRoute(START, DEST)).rejects.toMatchObject({ providerStatus: "TIMEOUT" });
+      await expect(service.getDirectRoute(START, DEST, false)).rejects.toMatchObject({ providerStatus: "TIMEOUT" });
     });
 
     it("omitting timeoutMs is a passthrough: an intentionally slow (but not truly hanging) call still resolves normally", async () => {
       const fetchSpy = vi.fn(async () => directionsOk({ duration: 600 }));
       const service = createGoogleRoutingService({ apiKey: "test-key", fetchImpl: fetchSpy });
 
-      await expect(service.getDirectRoute(START, DEST)).resolves.toMatchObject({ durationMinutes: 10 });
+      await expect(service.getDirectRoute(START, DEST, false)).resolves.toMatchObject({ durationMinutes: 10 });
     });
 
     it("configurability: a longer timeoutMs is not aborted where a shorter one would be, for the identical slow call", async () => {
@@ -268,7 +268,7 @@ describe("createGoogleRoutingService -- FR-006a, FR-007 (live traffic)", () => {
         fetchImpl: slowFetch(30) as never,
         timeoutMs: 5,
       });
-      await expect(shortTimeoutService.getDirectRoute(START, DEST)).rejects.toMatchObject({
+      await expect(shortTimeoutService.getDirectRoute(START, DEST, false)).rejects.toMatchObject({
         providerStatus: "TIMEOUT",
       });
 
@@ -277,7 +277,29 @@ describe("createGoogleRoutingService -- FR-006a, FR-007 (live traffic)", () => {
         fetchImpl: slowFetch(5) as never,
         timeoutMs: 200,
       });
-      await expect(longTimeoutService.getDirectRoute(START, DEST)).resolves.toMatchObject({ durationMinutes: 10 });
+      await expect(longTimeoutService.getDirectRoute(START, DEST, false)).resolves.toMatchObject({ durationMinutes: 10 });
+    });
+  });
+
+  describe("FR-018/design.md section 4.1a (INC-13): `avoid=tolls` parameter on the direct-route call", () => {
+    it("avoidTolls=true sets avoid=tolls on the Directions request", async () => {
+      const fetchSpy = vi.fn(async (_url: string) => directionsOk({ duration: 600 }));
+      const service = createGoogleRoutingService({ apiKey: "test-key", fetchImpl: fetchSpy });
+
+      await service.getDirectRoute(START, DEST, true);
+
+      const calledUrl = new URL(fetchSpy.mock.calls[0]![0] as string);
+      expect(calledUrl.searchParams.get("avoid")).toBe("tolls");
+    });
+
+    it("avoidTolls=false omits the avoid parameter entirely (not avoid= or avoid=none)", async () => {
+      const fetchSpy = vi.fn(async (_url: string) => directionsOk({ duration: 600 }));
+      const service = createGoogleRoutingService({ apiKey: "test-key", fetchImpl: fetchSpy });
+
+      await service.getDirectRoute(START, DEST, false);
+
+      const calledUrl = new URL(fetchSpy.mock.calls[0]![0] as string);
+      expect(calledUrl.searchParams.has("avoid")).toBe(false);
     });
   });
 });

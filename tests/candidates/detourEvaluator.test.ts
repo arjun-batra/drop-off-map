@@ -33,7 +33,7 @@ describe("createDetourEvaluator -- FR-006b, FR-009, design.md section 4.3", () =
       const service = flatDurationService(5);
       const evaluator = createDetourEvaluator(service);
 
-      const result = await evaluator.batchEvaluate(START, DEST, 8, [], 100, config(25));
+      const result = await evaluator.batchEvaluate(START, DEST, 8, [], 100, false, config(25));
 
       expect(service.getDurationsMinutes).not.toHaveBeenCalled();
       expect(result).toEqual([]);
@@ -43,7 +43,7 @@ describe("createDetourEvaluator -- FR-006b, FR-009, design.md section 4.3", () =
       const service = flatDurationService(5);
       const evaluator = createDetourEvaluator(service);
 
-      const result = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(1), 100, config(25));
+      const result = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(1), 100, false, config(25));
 
       expect(service.getDurationsMinutes).toHaveBeenCalledTimes(2);
       expect(result).toHaveLength(1);
@@ -53,7 +53,7 @@ describe("createDetourEvaluator -- FR-006b, FR-009, design.md section 4.3", () =
       const service = flatDurationService(5);
       const evaluator = createDetourEvaluator(service);
 
-      const result = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(25), 100, config(25));
+      const result = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(25), 100, false, config(25));
 
       expect(service.getDurationsMinutes).toHaveBeenCalledTimes(2);
       expect(result).toHaveLength(25);
@@ -63,7 +63,7 @@ describe("createDetourEvaluator -- FR-006b, FR-009, design.md section 4.3", () =
       const service = flatDurationService(5);
       const evaluator = createDetourEvaluator(service);
 
-      const result = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(26), 100, config(25));
+      const result = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(26), 100, false, config(25));
 
       expect(service.getDurationsMinutes).toHaveBeenCalledTimes(4);
       expect(result).toHaveLength(26);
@@ -73,7 +73,7 @@ describe("createDetourEvaluator -- FR-006b, FR-009, design.md section 4.3", () =
       const service = flatDurationService(5);
       const evaluator = createDetourEvaluator(service);
 
-      const result = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(47), 100, config(25));
+      const result = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(47), 100, false, config(25));
 
       expect(service.getDurationsMinutes).toHaveBeenCalledTimes(4);
       expect(result).toHaveLength(47); // none silently dropped
@@ -83,7 +83,7 @@ describe("createDetourEvaluator -- FR-006b, FR-009, design.md section 4.3", () =
       const service = flatDurationService(5);
       const evaluator = createDetourEvaluator(service);
 
-      const result = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(100), 100, config(30));
+      const result = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(100), 100, false, config(30));
 
       expect(service.getDurationsMinutes).toHaveBeenCalledTimes(8);
       expect(result).toHaveLength(100);
@@ -111,7 +111,7 @@ describe("createDetourEvaluator -- FR-006b, FR-009, design.md section 4.3", () =
       };
       const evaluator = createDetourEvaluator(service);
 
-      const evalPromise = evaluator.batchEvaluate(START, DEST, 8, makeCandidates(2), 100, config(25));
+      const evalPromise = evaluator.batchEvaluate(START, DEST, 8, makeCandidates(2), 100, false, config(25));
       // Let microtasks flush so the "from" call has a chance to run before "to" resolves.
       await Promise.resolve();
       await Promise.resolve();
@@ -126,7 +126,7 @@ describe("createDetourEvaluator -- FR-006b, FR-009, design.md section 4.3", () =
       const service = flatDurationService(5); // 5 min each leg
       const evaluator = createDetourEvaluator(service);
 
-      const result = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(1), 100, config(25));
+      const result = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(1), 100, false, config(25));
 
       // (5 + 5) - 8 = 2
       expect(result[0]!.driveTimeToCandidateMinutes).toBe(5);
@@ -138,7 +138,7 @@ describe("createDetourEvaluator -- FR-006b, FR-009, design.md section 4.3", () =
       const service = flatDurationService(4); // 4+4=8, equals the direct baseline
       const evaluator = createDetourEvaluator(service);
 
-      const result = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(1), 100, config(25));
+      const result = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(1), 100, false, config(25));
 
       expect(result[0]!.detourMinutes).toBe(0);
     });
@@ -149,10 +149,10 @@ describe("createDetourEvaluator -- FR-006b, FR-009, design.md section 4.3", () =
       const service = flatDurationService(5); // detour = 2
       const evaluator = createDetourEvaluator(service);
 
-      const exactBoundary = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(1), 2, config(25));
+      const exactBoundary = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(1), 2, false, config(25));
       expect(exactBoundary[0]!.qualifies).toBe(true);
 
-      const aboveThreshold = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(1), 1, config(25));
+      const aboveThreshold = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(1), 1, false, config(25));
       expect(aboveThreshold[0]!.qualifies).toBe(false);
     });
 
@@ -161,7 +161,7 @@ describe("createDetourEvaluator -- FR-006b, FR-009, design.md section 4.3", () =
       const evaluator = createDetourEvaluator(service);
       const candidates = makeCandidates(5);
 
-      const result = await evaluator.batchEvaluate(START, DEST, 8, candidates, 1, config(25));
+      const result = await evaluator.batchEvaluate(START, DEST, 8, candidates, 1, false, config(25));
 
       expect(result).toHaveLength(5);
       expect(result.every((c) => c.qualifies === false)).toBe(true);
@@ -180,7 +180,7 @@ describe("createDetourEvaluator -- FR-006b, FR-009, design.md section 4.3", () =
       };
       const evaluator = createDetourEvaluator(service);
 
-      const result = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(2), 100, config(25));
+      const result = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(2), 100, false, config(25));
 
       expect(result).toHaveLength(2); // neither candidate dropped
       expect(result[0]!.detourMinutes).toBe(Number.POSITIVE_INFINITY);
@@ -199,7 +199,7 @@ describe("createDetourEvaluator -- FR-006b, FR-009, design.md section 4.3", () =
       };
       const evaluator = createDetourEvaluator(service);
 
-      const result = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(2), 100, config(25));
+      const result = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(2), 100, false, config(25));
 
       expect(result).toHaveLength(2);
       expect(result[0]!.detourMinutes).toBe(Number.POSITIVE_INFINITY);
@@ -216,7 +216,7 @@ describe("createDetourEvaluator -- FR-006b, FR-009, design.md section 4.3", () =
       };
       const evaluator = createDetourEvaluator(service);
 
-      const result = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(3), 100, config(25));
+      const result = await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(3), 100, false, config(25));
       const sorted = [...result].sort((a, b) => a.detourMinutes - b.detourMinutes);
 
       expect(sorted[sorted.length - 1]!.detourMinutes).toBe(Number.POSITIVE_INFINITY);
@@ -231,8 +231,47 @@ describe("createDetourEvaluator -- FR-006b, FR-009, design.md section 4.3", () =
       const evaluator = createDetourEvaluator(service);
 
       await expect(
-        evaluator.batchEvaluate(START, DEST, 8, makeCandidates(5), 100, config(25)),
+        evaluator.batchEvaluate(START, DEST, 8, makeCandidates(5), 100, false, config(25)),
       ).rejects.toThrow(RoutingProviderError);
+    });
+  });
+
+  describe("FR-018/design.md section 4.3a (INC-13): `avoidTolls` threads to BOTH Distance Matrix legs of EVERY batch", () => {
+    it("avoidTolls=true is forwarded as the 3rd argument to both the to-leg and from-leg calls, for a single batch", async () => {
+      const service = flatDurationService(5);
+      const evaluator = createDetourEvaluator(service);
+
+      await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(3), 100, true, config(25));
+
+      expect(service.getDurationsMinutes).toHaveBeenCalledTimes(2);
+      for (const call of service.getDurationsMinutes.mock.calls) {
+        expect(call[2]).toBe(true);
+      }
+    });
+
+    it("avoidTolls=false is forwarded as false (not omitted/undefined) to both legs", async () => {
+      const service = flatDurationService(5);
+      const evaluator = createDetourEvaluator(service);
+
+      await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(3), 100, false, config(25));
+
+      expect(service.getDurationsMinutes).toHaveBeenCalledTimes(2);
+      for (const call of service.getDurationsMinutes.mock.calls) {
+        expect(call[2]).toBe(false);
+      }
+    });
+
+    it("avoidTolls=true is forwarded to EVERY batch's two calls, not just the first batch, across multiple batches", async () => {
+      const service = flatDurationService(5);
+      const evaluator = createDetourEvaluator(service);
+
+      // 3 batches of batchSize 2 (candidates=5 -> ceil(5/2)=3 batches, 6 calls).
+      await evaluator.batchEvaluate(START, DEST, 8, makeCandidates(5), 100, true, config(2));
+
+      expect(service.getDurationsMinutes).toHaveBeenCalledTimes(6);
+      for (const call of service.getDurationsMinutes.mock.calls) {
+        expect(call[2]).toBe(true);
+      }
     });
   });
 });

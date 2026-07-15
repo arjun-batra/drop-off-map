@@ -36,7 +36,7 @@ describe("createGoogleDistanceMatrixService -- design.md section 4.3 step 6, FR-
     const fetchSpy = vi.fn(async (_url: string) => matrixOk([[{ duration: 300 }, { duration: 300 }]]));
     const service = createGoogleDistanceMatrixService({ apiKey: "test-key", fetchImpl: fetchSpy, now: () => fixedNow });
 
-    await service.getDurationsMinutes([START], CANDIDATES);
+    await service.getDurationsMinutes([START], CANDIDATES, false);
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const url = new URL(fetchSpy.mock.calls[0]![0] as string);
@@ -51,7 +51,7 @@ describe("createGoogleDistanceMatrixService -- design.md section 4.3 step 6, FR-
     const fetchSpy = vi.fn(async (_url: string) => matrixOk([[{ duration: 300 }], [{ duration: 300 }]]));
     const service = createGoogleDistanceMatrixService({ apiKey: "test-key", fetchImpl: fetchSpy });
 
-    await service.getDurationsMinutes(CANDIDATES, [DEST]);
+    await service.getDurationsMinutes(CANDIDATES, [DEST], false);
 
     const url = new URL(fetchSpy.mock.calls[0]![0] as string);
     expect(url.searchParams.get("origins")).toBe("43.7,-79.4|43.71,-79.41");
@@ -62,7 +62,7 @@ describe("createGoogleDistanceMatrixService -- design.md section 4.3 step 6, FR-
     const fetchSpy = vi.fn(async () => matrixOk([[{ duration: 600, durationInTraffic: 900 }]]));
     const service = createGoogleDistanceMatrixService({ apiKey: "test-key", fetchImpl: fetchSpy });
 
-    const result = await service.getDurationsMinutes([START], [CANDIDATES[0]!]);
+    const result = await service.getDurationsMinutes([START], [CANDIDATES[0]!], false);
 
     expect(result[0]![0]).toBe(15);
     expect(result[0]![0]).not.toBe(10);
@@ -72,7 +72,7 @@ describe("createGoogleDistanceMatrixService -- design.md section 4.3 step 6, FR-
     const fetchSpy = vi.fn(async () => matrixOk([[{ duration: 600 }]]));
     const service = createGoogleDistanceMatrixService({ apiKey: "test-key", fetchImpl: fetchSpy });
 
-    const result = await service.getDurationsMinutes([START], [CANDIDATES[0]!]);
+    const result = await service.getDurationsMinutes([START], [CANDIDATES[0]!], false);
 
     expect(result[0]![0]).toBe(10);
   });
@@ -81,7 +81,7 @@ describe("createGoogleDistanceMatrixService -- design.md section 4.3 step 6, FR-
     const fetchSpy = vi.fn(async () => matrixOk([[{ status: "ZERO_RESULTS" }, { duration: 300 }]]));
     const service = createGoogleDistanceMatrixService({ apiKey: "test-key", fetchImpl: fetchSpy });
 
-    const result = await service.getDurationsMinutes([START], CANDIDATES);
+    const result = await service.getDurationsMinutes([START], CANDIDATES, false);
 
     expect(result[0]![0]).toBeNull();
     expect(result[0]![1]).toBe(5);
@@ -91,15 +91,15 @@ describe("createGoogleDistanceMatrixService -- design.md section 4.3 step 6, FR-
     const fetchSpy = vi.fn(async () => matrixStatus("REQUEST_DENIED", "The provided API key is invalid."));
     const service = createGoogleDistanceMatrixService({ apiKey: "bad-key", fetchImpl: fetchSpy });
 
-    await expect(service.getDurationsMinutes([START], CANDIDATES)).rejects.toThrow(RoutingProviderError);
-    await expect(service.getDurationsMinutes([START], CANDIDATES)).rejects.toThrow("The provided API key is invalid.");
+    await expect(service.getDurationsMinutes([START], CANDIDATES, false)).rejects.toThrow(RoutingProviderError);
+    await expect(service.getDurationsMinutes([START], CANDIDATES, false)).rejects.toThrow("The provided API key is invalid.");
   });
 
   it("OVER_QUERY_LIMIT (a whole-request status) also throws rather than being treated as a per-element issue", async () => {
     const fetchSpy = vi.fn(async () => matrixStatus("OVER_QUERY_LIMIT"));
     const service = createGoogleDistanceMatrixService({ apiKey: "test-key", fetchImpl: fetchSpy });
 
-    await expect(service.getDurationsMinutes([START], CANDIDATES)).rejects.toThrow(RoutingProviderError);
+    await expect(service.getDurationsMinutes([START], CANDIDATES, false)).rejects.toThrow(RoutingProviderError);
   });
 
   it("a network failure surfaces as RoutingProviderError, not an unhandled rejection", async () => {
@@ -108,28 +108,28 @@ describe("createGoogleDistanceMatrixService -- design.md section 4.3 step 6, FR-
     });
     const service = createGoogleDistanceMatrixService({ apiKey: "test-key", fetchImpl: fetchSpy });
 
-    await expect(service.getDurationsMinutes([START], CANDIDATES)).rejects.toThrow(RoutingProviderError);
+    await expect(service.getDurationsMinutes([START], CANDIDATES, false)).rejects.toThrow(RoutingProviderError);
   });
 
   it("a malformed response shape (missing status/rows) throws RoutingProviderError rather than crashing", async () => {
     const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ notStatus: true }) }));
     const service = createGoogleDistanceMatrixService({ apiKey: "test-key", fetchImpl: fetchSpy });
 
-    await expect(service.getDurationsMinutes([START], CANDIDATES)).rejects.toThrow(RoutingProviderError);
+    await expect(service.getDurationsMinutes([START], CANDIDATES, false)).rejects.toThrow(RoutingProviderError);
   });
 
   it("an HTTP-level failure (non-ok response) throws RoutingProviderError", async () => {
     const fetchSpy = vi.fn(async () => ({ ok: false, status: 500, json: async () => ({}) }));
     const service = createGoogleDistanceMatrixService({ apiKey: "test-key", fetchImpl: fetchSpy });
 
-    await expect(service.getDurationsMinutes([START], CANDIDATES)).rejects.toThrow(RoutingProviderError);
+    await expect(service.getDurationsMinutes([START], CANDIDATES, false)).rejects.toThrow(RoutingProviderError);
   });
 
   it("the configured apiKey is forwarded, never a hardcoded/other value", async () => {
     const fetchSpy = vi.fn(async (_url: string) => matrixOk([[{ duration: 300 }]]));
     const service = createGoogleDistanceMatrixService({ apiKey: "my-specific-configured-key", fetchImpl: fetchSpy });
 
-    await service.getDurationsMinutes([START], [CANDIDATES[0]!]);
+    await service.getDurationsMinutes([START], [CANDIDATES[0]!], false);
 
     const url = new URL(fetchSpy.mock.calls[0]![0] as string);
     expect(url.searchParams.get("key")).toBe("my-specific-configured-key");
@@ -153,7 +153,7 @@ describe("createGoogleDistanceMatrixService -- design.md section 4.3 step 6, FR-
         timeoutMs: 20,
       });
 
-      await expect(service.getDurationsMinutes([START], CANDIDATES)).rejects.toMatchObject({
+      await expect(service.getDurationsMinutes([START], CANDIDATES, false)).rejects.toMatchObject({
         providerStatus: "TIMEOUT",
       });
     });
@@ -162,7 +162,29 @@ describe("createGoogleDistanceMatrixService -- design.md section 4.3 step 6, FR-
       const fetchSpy = vi.fn(async () => matrixOk([[{ duration: 300 }]]));
       const service = createGoogleDistanceMatrixService({ apiKey: "test-key", fetchImpl: fetchSpy });
 
-      await expect(service.getDurationsMinutes([START], [CANDIDATES[0]!])).resolves.toEqual([[5]]);
+      await expect(service.getDurationsMinutes([START], [CANDIDATES[0]!], false)).resolves.toEqual([[5]]);
+    });
+  });
+
+  describe("FR-018/design.md section 4.3a (INC-13): `avoid=tolls` parameter", () => {
+    it("avoidTolls=true sets avoid=tolls on the Distance Matrix request", async () => {
+      const fetchSpy = vi.fn(async (_url: string) => matrixOk([[{ duration: 300 }]]));
+      const service = createGoogleDistanceMatrixService({ apiKey: "test-key", fetchImpl: fetchSpy });
+
+      await service.getDurationsMinutes([START], [CANDIDATES[0]!], true);
+
+      const url = new URL(fetchSpy.mock.calls[0]![0] as string);
+      expect(url.searchParams.get("avoid")).toBe("tolls");
+    });
+
+    it("avoidTolls=false omits the avoid parameter entirely", async () => {
+      const fetchSpy = vi.fn(async (_url: string) => matrixOk([[{ duration: 300 }]]));
+      const service = createGoogleDistanceMatrixService({ apiKey: "test-key", fetchImpl: fetchSpy });
+
+      await service.getDurationsMinutes([START], [CANDIDATES[0]!], false);
+
+      const url = new URL(fetchSpy.mock.calls[0]![0] as string);
+      expect(url.searchParams.has("avoid")).toBe(false);
     });
   });
 });

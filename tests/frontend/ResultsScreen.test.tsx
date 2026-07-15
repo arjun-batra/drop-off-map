@@ -77,6 +77,7 @@ const REQUEST: DropOffSearchRequest = {
   driverDestination: { lat: 43.75, lng: -79.4, label: "456 Bay St" },
   passengerDestination: { lat: 43.78, lng: -79.42, label: "789 King St" },
   maxDetourMinutes: 15,
+  avoidTolls: false,
 };
 
 function render(
@@ -254,8 +255,13 @@ describe("ResultsScreen -- ux-spec.md section 6, FR-010/FR-011/FR-012/FR-013", (
     expect(onTryAgain).toHaveBeenCalledTimes(1);
   });
 
-  it("'Try again' button is NOT shown on the other three message-only statuses (no_viable_option/out_of_service_area/invalid_input) -- only 'timeout' invites a retry", () => {
-    const statuses: DropOffSearchResponse["status"][] = ["no_viable_option", "out_of_service_area", "invalid_input"];
+  it("'Try again' button is NOT shown on the other message-only statuses (no_viable_option/out_of_service_area/invalid_input/no_toll_free_route) -- only 'timeout' invites a retry", () => {
+    const statuses: DropOffSearchResponse["status"][] = [
+      "no_viable_option",
+      "out_of_service_area",
+      "invalid_input",
+      "no_toll_free_route",
+    ];
     for (const status of statuses) {
       render({ status, candidates: [], message: "some message", requestId: "r1", timingMs: 1 });
       const tryAgainButton = Array.from(container.querySelectorAll("button")).find(
@@ -281,6 +287,34 @@ describe("ResultsScreen -- ux-spec.md section 6, FR-010/FR-011/FR-012/FR-013", (
 
     expect(container.querySelectorAll(".results-screen__card")).toHaveLength(0);
     expect(container.textContent).toContain("This trip falls outside our service area");
+  });
+
+  it("no_toll_free_route (FR-018/OQ-9, INC-13, ux-spec.md section 6.6a): renders the 'No toll-free route found' empty state with the server-provided message, no cards, no map, no 'Try again' button", () => {
+    const response: DropOffSearchResponse = {
+      status: "no_toll_free_route",
+      candidates: [],
+      message:
+        "We couldn't find a route that avoids tolls for this trip. Uncheck \"Avoid tolls\" to see toll-inclusive options, or try a different start or destination.",
+      requestId: "r1",
+      timingMs: 200,
+    };
+    render(response);
+
+    expect(container.querySelectorAll(".results-screen__card")).toHaveLength(0);
+    expect(container.textContent).toContain("No toll-free route found");
+    expect(container.textContent).toContain("We couldn't find a route that avoids tolls");
+    expect(mockMapViewSpy).not.toHaveBeenCalled();
+
+    const tryAgainButton = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent === "Try again",
+    );
+    expect(tryAgainButton).toBeUndefined();
+
+    // Only "← Edit search" is offered (ux-spec.md section 6.6a's explicit precedent-match to no_viable_option).
+    const editButton = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Edit search"),
+    );
+    expect(editButton).toBeTruthy();
   });
 
   it("invalid_input (defense-in-depth path): renders an empty state with the message, does not crash", () => {
