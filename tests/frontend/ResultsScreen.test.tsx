@@ -810,4 +810,212 @@ describe("ResultsScreen -- ux-spec.md section 6, FR-010/FR-011/FR-012/FR-013", (
       expect(text).not.toContain("Bay St Station");
     });
   });
+
+  // FR-019 (INC-14): two DISTINCT UI treatments for two DIFFERENT
+  // situations -- ux-spec.md section 6.4a's excluded-candidate notice
+  // (candidates no longer present, because the user answered "No") vs.
+  // section 5a.4/6.4 item 7's per-card round-cap disclosure (a candidate
+  // that IS present, whose status was never confirmed). No prior test file
+  // covers either.
+  describe("FR-019 (INC-14): excluded-candidate notice (section 6.4a) and round-cap disclosure (section 5a.4/6.4 item 7)", () => {
+    function candidate(overrides: Partial<DropOffSearchCandidate> = {}): DropOffSearchCandidate {
+      return {
+        rank: 1,
+        location: { lat: 43.66, lng: -79.4 },
+        label: "Oak Ave & Main St",
+        routeOrderIndex: 0,
+        driveTimeToDropoffMinutes: 8,
+        detourMinutes: 3,
+        walkTimeMinutes: 4,
+        waitTimeMinutes: 5,
+        transitTimeMinutes: 17,
+        passengerTotalTimeMinutes: 26,
+        driverTotalTimeMinutes: 27,
+        exceedsThreshold: false,
+        ...overrides,
+      };
+    }
+
+    function renderWithExcluded(
+      response: DropOffSearchResponse,
+      excludedCandidateCount?: number,
+    ) {
+      act(() => {
+        root = createRoot(container);
+        root.render(
+          <ResultsScreen
+            response={response}
+            request={REQUEST}
+            onEditSearch={vi.fn()}
+            onTryAgain={vi.fn()}
+            mapConfig={NO_MAP_CONFIG}
+            excludedCandidateCount={excludedCandidateCount}
+          />,
+        );
+      });
+    }
+
+    it("excludedCandidateCount undefined (first-pass search, never went through the toll flow) shows NO notice at all", () => {
+      const response: DropOffSearchResponse = {
+        status: "ranked",
+        candidates: [candidate()],
+        requestId: "r1",
+        timingMs: 5,
+      };
+      renderWithExcluded(response, undefined);
+      expect(container.textContent).not.toContain("hidden because");
+    });
+
+    it("excludedCandidateCount:0 also shows NO notice (defensive -- not just 'undefined' is the suppression condition)", () => {
+      const response: DropOffSearchResponse = {
+        status: "ranked",
+        candidates: [candidate()],
+        requestId: "r1",
+        timingMs: 5,
+      };
+      renderWithExcluded(response, 0);
+      expect(container.textContent).not.toContain("hidden because");
+    });
+
+    it("excludedCandidateCount:1 shows the exact singular ux-spec.md section 6.4a copy", () => {
+      const response: DropOffSearchResponse = {
+        status: "ranked",
+        candidates: [candidate()],
+        requestId: "r1",
+        timingMs: 5,
+      };
+      renderWithExcluded(response, 1);
+      expect(container.textContent).toContain(
+        "1 option was hidden because it exits and re-enters a toll highway during the trip, per your answer.",
+      );
+      expect(container.textContent).not.toContain("options were hidden");
+    });
+
+    it("excludedCandidateCount:2 shows the exact PLURAL ux-spec.md section 6.4a copy", () => {
+      const response: DropOffSearchResponse = {
+        status: "ranked",
+        candidates: [candidate()],
+        requestId: "r1",
+        timingMs: 5,
+      };
+      renderWithExcluded(response, 2);
+      expect(container.textContent).toContain(
+        "2 options were hidden because they exit and re-enter a toll highway during the trip, per your answer.",
+      );
+    });
+
+    it("the notice is positioned above the fallback warning banner when both are present (ux-spec.md section 6.4a: 'directly below the trip summary and above the fallback warning banner')", () => {
+      const response: DropOffSearchResponse = {
+        status: "fallback",
+        candidates: [candidate()],
+        warning: "None of the drop-off points found keep your detour under 15 minutes.",
+        requestId: "r1",
+        timingMs: 5,
+      };
+      renderWithExcluded(response, 1);
+      const html = container.innerHTML;
+      const noticeIndex = html.indexOf("hidden because");
+      const warningIndex = html.indexOf("None of the drop-off points found");
+      expect(noticeIndex).toBeGreaterThan(-1);
+      expect(warningIndex).toBeGreaterThan(-1);
+      expect(noticeIndex).toBeLessThan(warningIndex);
+    });
+
+    it("a candidate carrying needsTollReentryConfirmation:true (the round-cap residual case) renders the exact ux-spec.md section 5a.4 disclosure copy on its OWN card only", () => {
+      const response: DropOffSearchResponse = {
+        status: "ranked",
+        candidates: [
+          candidate({ rank: 1, label: "Confirmed Candidate" }),
+          candidate({
+            rank: 2,
+            location: { lat: 43.7, lng: -79.42 },
+            label: "Unconfirmed Candidate",
+            needsTollReentryConfirmation: true,
+            tollReentryDescription: "Highway 407 — exits and re-enters it during this trip",
+          }),
+        ],
+        requestId: "r1",
+        timingMs: 5,
+      };
+      renderWithExcluded(response, undefined);
+
+      const cards = Array.from(container.querySelectorAll(".results-screen__card"));
+      const confirmedCard = cards.find((c) => c.textContent?.includes("Confirmed Candidate"))!;
+      const unconfirmedCard = cards.find((c) => c.textContent?.includes("Unconfirmed Candidate"))!;
+
+      const exactCopy =
+        "This option uses a toll highway that exits and re-enters during the trip. We weren't able to ask you about it — your answer for the other option(s) doesn't apply here.";
+      expect(unconfirmedCard.textContent).toContain(exactCopy);
+      expect(confirmedCard.textContent).not.toContain(exactCopy);
+      expect(confirmedCard.textContent).not.toContain("We weren't able to ask you about it");
+    });
+
+    it("the round-cap disclosure never says the pattern was accepted or rejected (deliberately neutral copy, per ux-spec.md section 5a.4)", () => {
+      const response: DropOffSearchResponse = {
+        status: "ranked",
+        candidates: [
+          candidate({
+            needsTollReentryConfirmation: true,
+            tollReentryDescription: "Highway 407 — exits and re-enters it during this trip",
+          }),
+        ],
+        requestId: "r1",
+        timingMs: 5,
+      };
+      renderWithExcluded(response, undefined);
+      expect(container.textContent).not.toMatch(/\baccepted\b/i);
+      expect(container.textContent).not.toMatch(/\brejected\b/i);
+    });
+
+    it("the excluded-candidate notice and the round-cap disclosure coexist correctly without being confused with each other (both can legitimately appear together)", () => {
+      const response: DropOffSearchResponse = {
+        status: "ranked",
+        candidates: [
+          candidate({ rank: 1, label: "Confirmed Candidate" }),
+          candidate({
+            rank: 2,
+            location: { lat: 43.7, lng: -79.42 },
+            label: "Unconfirmed Candidate",
+            needsTollReentryConfirmation: true,
+            tollReentryDescription: "Highway 407 — exits and re-enters it during this trip",
+          }),
+        ],
+        requestId: "r1",
+        timingMs: 5,
+      };
+      renderWithExcluded(response, 1);
+
+      // Both distinct pieces of copy are present...
+      expect(container.textContent).toContain("1 option was hidden because it exits and re-enters a toll highway");
+      expect(container.textContent).toContain("We weren't able to ask you about it");
+      // ...and the per-card disclosure is still scoped to only its own card,
+      // not duplicated onto the confirmed candidate's card or folded into
+      // the screen-level notice.
+      const cards = Array.from(container.querySelectorAll(".results-screen__card"));
+      const confirmedCard = cards.find((c) => c.textContent?.includes("Confirmed Candidate"))!;
+      expect(confirmedCard.textContent).not.toContain("We weren't able to ask you about it");
+    });
+
+    it("the round-cap disclosure is positioned after the header (rank/location) and before the headline metric, per ux-spec.md section 6.4 anatomy item 7", () => {
+      const response: DropOffSearchResponse = {
+        status: "ranked",
+        candidates: [
+          candidate({
+            needsTollReentryConfirmation: true,
+            tollReentryDescription: "Highway 407 — exits and re-enters it during this trip",
+          }),
+        ],
+        requestId: "r1",
+        timingMs: 5,
+      };
+      renderWithExcluded(response, undefined);
+      const cardText = container.querySelector(".results-screen__card")!.textContent!;
+      const headerIndex = cardText.indexOf("Oak Ave");
+      const disclosureIndex = cardText.indexOf("We weren't able to ask you about it");
+      const headlineIndex = cardText.indexOf("total for your passenger");
+      expect(headerIndex).toBeGreaterThan(-1);
+      expect(disclosureIndex).toBeGreaterThan(headerIndex);
+      expect(disclosureIndex).toBeLessThan(headlineIndex);
+    });
+  });
 });

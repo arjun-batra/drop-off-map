@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { analyzeTollUsage, isLimitedAccessHighway } from "../../src/routing/tollHighwayRules";
+import { analyzeTollUsage, describeTollRoadReentry, isLimitedAccessHighway } from "../../src/routing/tollHighwayRules";
 import type { DirectionStep } from "../../src/routing/types";
 
 /**
@@ -296,6 +296,53 @@ describe("analyzeTollUsage -- FR-018/FR-019, design.md section 4.7, DEC-5", () =
     it("strips HTML tags before matching, consistent with isLimitedAccessHighway's behavior", () => {
       const steps = [step("Merge onto <b>Highway 407</b>")];
       expect(analyzeTollUsage(steps).usesTollRoad).toBe(true);
+    });
+  });
+
+  // FR-019/INC-14 (design.md section 4.6 step 2): describeTollRoadReentry has
+  // NO prior coverage anywhere in this suite -- it shipped in INC-14 but
+  // isTollHighwayRules.test.ts (INC-13) predates it. Verifying independently
+  // here, not trusting dev's own smoke-testing claim in docs/handoff.md.
+  describe("describeTollRoadReentry -- FR-019/INC-14, design.md section 4.6 step 2", () => {
+    it('names "Highway 407" and reproduces the exact ux-spec.md section 5a.2 mockup copy ("Highway 407 — exits and re-enters it during this trip")', () => {
+      const steps = [
+        step("Merge onto Highway 407"),
+        step("Take exit onto Local Road"),
+        step("Merge back onto Highway 407"),
+      ];
+      expect(describeTollRoadReentry(steps)).toBe("Highway 407 — exits and re-enters it during this trip");
+    });
+
+    it.each([
+      ["ON-407 E", "Merge onto <b>ON-407 E</b>"],
+      ["407 ETR", "Continue on 407 ETR"],
+      ["Express Toll Route", "Continue on the Express Toll Route"],
+    ])("recognizes the %s spelling variant and still names it \"Highway 407\"", (_label, text) => {
+      expect(describeTollRoadReentry([step(text)])).toBe("Highway 407 — exits and re-enters it during this trip");
+    });
+
+    it("returns the name of the FIRST matching step when multiple toll-road steps are present (not the last)", () => {
+      const steps = [step("Merge onto Highway 407"), step("Take exit"), step("Continue on 407 ETR")];
+      // Both steps match the same toll road name in this fixed identifier
+      // list (there is only one tolled highway in the region per design.md
+      // section 4.7), so this mostly documents "first match wins" behavior
+      // rather than a name conflict -- still worth pinning down explicitly.
+      expect(describeTollRoadReentry(steps)).toBe("Highway 407 — exits and re-enters it during this trip");
+    });
+
+    it("returns undefined when no step matches the fixed toll-road identifier list (defensive -- callers only invoke this after hasExitReentry:true, but this function does not assume that invariant)", () => {
+      const steps = [step("Merge onto Highway 401"), step("Take exit"), step("Merge onto Highway 401 again")];
+      expect(describeTollRoadReentry(steps)).toBeUndefined();
+    });
+
+    it("returns undefined for an empty steps array", () => {
+      expect(describeTollRoadReentry([])).toBeUndefined();
+    });
+
+    it("strips HTML tags before matching, consistent with analyzeTollUsage/isLimitedAccessHighway", () => {
+      expect(describeTollRoadReentry([step("Merge onto <b>Highway 407</b>")])).toBe(
+        "Highway 407 — exits and re-enters it during this trip",
+      );
     });
   });
 });

@@ -695,4 +695,347 @@ describe("SearchFlow -- ux-spec.md Input -> Loading -> Results | Error orchestra
       expect(capturedSignals[1]!.aborted).toBe(false);
     });
   });
+
+  // FR-019 (INC-14), ux-spec.md section 5a: the Input -> Loading ->
+  // [Toll Road Check x0-2] -> Results orchestration. Independent QA
+  // verification of dev's "don't re-ask" and "two-round cap is
+  // frontend-only" claims at the component-integration level (the backend
+  // half of both claims is covered independently in
+  // tests/api/confirm-toll-reentry.test.ts).
+  describe("FR-019 (INC-14): Toll Road Check flow orchestration", () => {
+    function baseCandidate(overrides: Record<string, unknown> = {}) {
+      return {
+        rank: 1,
+        location: { lat: 43.66, lng: -79.4 },
+        label: "Oak Ave & Main St",
+        routeOrderIndex: 0,
+        driveTimeToDropoffMinutes: 8,
+        detourMinutes: 3,
+        walkTimeMinutes: 4,
+        waitTimeMinutes: 5,
+        transitTimeMinutes: 17,
+        passengerTotalTimeMinutes: 26,
+        driverTotalTimeMinutes: 27,
+        exceedsThreshold: false,
+        ...overrides,
+      };
+    }
+
+    it("a response with no flagged candidates goes straight to Results, never showing the Toll Road Check screen", async () => {
+      render();
+      vi.spyOn(api, "searchDropOffPoints").mockResolvedValue({
+        ok: true,
+        response: { status: "ranked", candidates: [baseCandidate()], requestId: "r1", timingMs: 5 },
+      });
+      const confirmSpy = vi.spyOn(api, "confirmTollReentry");
+
+      await fillAndSubmit();
+
+      expect(container.textContent).toContain("Oak Ave & Main St");
+      expect(container.textContent).not.toContain("toll roads");
+      expect(confirmSpy).not.toHaveBeenCalled();
+    });
+
+    it("a response with a flagged candidate shows the Toll Road Check screen (round 1) instead of Results", async () => {
+      render();
+      vi.spyOn(api, "searchDropOffPoints").mockResolvedValue({
+        ok: true,
+        response: {
+          status: "ranked",
+          candidates: [
+            baseCandidate({ needsTollReentryConfirmation: true, tollReentryDescription: "Highway 407 — exits and re-enters it during this trip" }),
+          ],
+          requestId: "r1",
+          timingMs: 5,
+        },
+      });
+
+      await fillAndSubmit();
+
+      expect(container.textContent).toContain("One quick question about toll roads");
+      // Results itself (the trip-summary line, only rendered by
+      // ResultsScreen) must not be showing yet -- this is the interstitial,
+      // not Results.
+      expect(container.textContent).not.toContain("Your trip:");
+      expect(container.querySelector(".results-screen__cards")).toBeNull();
+    });
+
+    it("answering round 1 calls confirmTollReentry with the original request and exactly the rejected candidate's location", async () => {
+      render();
+      const flaggedCandidate = baseCandidate({
+        location: { lat: 43.66, lng: -79.4 },
+        needsTollReentryConfirmation: true,
+        tollReentryDescription: "Highway 407 — exits and re-enters it during this trip",
+      });
+      vi.spyOn(api, "searchDropOffPoints").mockResolvedValue({
+        ok: true,
+        response: { status: "ranked", candidates: [flaggedCandidate], requestId: "r1", timingMs: 5 },
+      });
+      const confirmSpy = vi.spyOn(api, "confirmTollReentry").mockResolvedValue({
+        ok: true,
+        response: { status: "ranked", candidates: [baseCandidate({ label: "Replacement Rd" })], requestId: "r2", timingMs: 5 },
+      });
+
+      await fillAndSubmit();
+      expect(container.textContent).toContain("toll roads");
+
+      const noButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("No, don't include it"))!;
+      act(() => noButton.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      const continueButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Continue")!;
+      act(() => continueButton.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      await flush();
+
+      expect(confirmSpy).toHaveBeenCalledTimes(1);
+      const [confirmRequest] = confirmSpy.mock.calls[0]!;
+      expect(confirmRequest.rejectedCandidateLocations).toEqual([{ lat: 43.66, lng: -79.4 }]);
+      expect(container.textContent).toContain("Replacement Rd");
+    });
+
+    it("round 1 -> confirm response has a newly-flagged candidate -> shows round 2 (not Results)", async () => {
+      render();
+      vi.spyOn(api, "searchDropOffPoints").mockResolvedValue({
+        ok: true,
+        response: {
+          status: "ranked",
+          candidates: [baseCandidate({ needsTollReentryConfirmation: true, tollReentryDescription: "Highway 407 — exits and re-enters it during this trip" })],
+          requestId: "r1",
+          timingMs: 5,
+        },
+      });
+      vi.spyOn(api, "confirmTollReentry").mockResolvedValue({
+        ok: true,
+        response: {
+          status: "ranked",
+          candidates: [
+            baseCandidate({
+              location: { lat: 43.7, lng: -79.41 },
+              label: "Newly Promoted Rd",
+              needsTollReentryConfirmation: true,
+              tollReentryDescription: "Highway 407 — exits and re-enters it during this trip",
+            }),
+          ],
+          requestId: "r2",
+          timingMs: 5,
+        },
+      });
+
+      await fillAndSubmit();
+      const noButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("No, don't include it"))!;
+      act(() => noButton.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      const continueButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Continue")!;
+      act(() => continueButton.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      await flush();
+
+      // Round 2's distinct copy, and the newly-promoted candidate's own card.
+      expect(container.textContent).toContain("One more thing");
+      expect(container.textContent).toContain("Newly Promoted Rd");
+      expect(container.textContent).not.toContain("Oak Ave & Main St"); // not Results yet
+    });
+
+    it("HARD CAP: after round 2 completes, the flow ALWAYS proceeds to Results regardless of whether the round-2 confirm response still has a flagged candidate (no third Toll Road Check screen)", async () => {
+      render();
+      vi.spyOn(api, "searchDropOffPoints").mockResolvedValue({
+        ok: true,
+        response: {
+          status: "ranked",
+          candidates: [baseCandidate({ needsTollReentryConfirmation: true, tollReentryDescription: "Highway 407 — exits and re-enters it during this trip" })],
+          requestId: "r1",
+          timingMs: 5,
+        },
+      });
+      const confirmSpy = vi
+        .spyOn(api, "confirmTollReentry")
+        .mockResolvedValueOnce({
+          ok: true,
+          response: {
+            status: "ranked",
+            candidates: [
+              baseCandidate({
+                location: { lat: 43.7, lng: -79.41 },
+                label: "Round 2 Candidate",
+                needsTollReentryConfirmation: true,
+                tollReentryDescription: "Highway 407 — exits and re-enters it during this trip",
+              }),
+            ],
+            requestId: "r2",
+            timingMs: 5,
+          },
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          response: {
+            status: "ranked",
+            // Still flagged, simulating yet another newly-promoted
+            // candidate the backend has no concept of a "round cap" to stop
+            // flagging -- the FRONTEND must be the one that stops here.
+            candidates: [
+              baseCandidate({
+                location: { lat: 43.8, lng: -79.42 },
+                label: "Round-Cap Residual Candidate",
+                needsTollReentryConfirmation: true,
+                tollReentryDescription: "Highway 407 — exits and re-enters it during this trip",
+              }),
+            ],
+            requestId: "r3",
+            timingMs: 5,
+          },
+        });
+
+      await fillAndSubmit();
+      // Round 1: reject.
+      act(() =>
+        Array.from(container.querySelectorAll("button"))
+          .find((b) => b.textContent?.includes("No, don't include it"))!
+          .dispatchEvent(new MouseEvent("click", { bubbles: true })),
+      );
+      act(() =>
+        Array.from(container.querySelectorAll("button"))
+          .find((b) => b.textContent === "Continue")!
+          .dispatchEvent(new MouseEvent("click", { bubbles: true })),
+      );
+      await flush();
+      expect(container.textContent).toContain("Round 2 Candidate");
+      expect(container.textContent).toContain("One more thing");
+
+      // Round 2: reject again.
+      act(() =>
+        Array.from(container.querySelectorAll("button"))
+          .find((b) => b.textContent?.includes("No, don't include it"))!
+          .dispatchEvent(new MouseEvent("click", { bubbles: true })),
+      );
+      act(() =>
+        Array.from(container.querySelectorAll("button"))
+          .find((b) => b.textContent === "Continue")!
+          .dispatchEvent(new MouseEvent("click", { bubbles: true })),
+      );
+      await flush();
+
+      // Must be on Results now, showing the round-cap-residual candidate
+      // WITH its disclosure -- never a third Toll Road Check screen.
+      expect(container.textContent).not.toContain("One more thing");
+      expect(container.textContent).not.toContain("Continue");
+      expect(container.textContent).toContain("Round-Cap Residual Candidate");
+      expect(container.textContent).toContain("We weren't able to ask you about it");
+      expect(confirmSpy).toHaveBeenCalledTimes(2);
+
+      // The second (round 2) confirm call's cumulative rejected set must
+      // include BOTH rounds' rejections, not just the latest one.
+      const [, secondCallArgs] = confirmSpy.mock.calls;
+      expect(secondCallArgs![0]!.rejectedCandidateLocations).toEqual([
+        { lat: 43.66, lng: -79.4 },
+        { lat: 43.7, lng: -79.41 },
+      ]);
+    });
+
+    it("the excluded-candidate notice count equals the cumulative rejected count when Results is reached via the confirm flow", async () => {
+      render();
+      vi.spyOn(api, "searchDropOffPoints").mockResolvedValue({
+        ok: true,
+        response: {
+          status: "ranked",
+          candidates: [baseCandidate({ needsTollReentryConfirmation: true, tollReentryDescription: "Highway 407 — exits and re-enters it during this trip" })],
+          requestId: "r1",
+          timingMs: 5,
+        },
+      });
+      vi.spyOn(api, "confirmTollReentry").mockResolvedValue({
+        ok: true,
+        response: { status: "ranked", candidates: [baseCandidate({ label: "Survivor Rd" })], requestId: "r2", timingMs: 5 },
+      });
+
+      await fillAndSubmit();
+      act(() =>
+        Array.from(container.querySelectorAll("button"))
+          .find((b) => b.textContent?.includes("No, don't include it"))!
+          .dispatchEvent(new MouseEvent("click", { bubbles: true })),
+      );
+      act(() =>
+        Array.from(container.querySelectorAll("button"))
+          .find((b) => b.textContent === "Continue")!
+          .dispatchEvent(new MouseEvent("click", { bubbles: true })),
+      );
+      await flush();
+
+      expect(container.textContent).toContain("1 option was hidden because it exits and re-enters a toll highway");
+    });
+
+    it("a first-pass search that never triggers the Toll Road Check flow shows NO excluded-candidate notice at all (excludedCandidateCount stays undefined, not 0)", async () => {
+      render();
+      vi.spyOn(api, "searchDropOffPoints").mockResolvedValue({
+        ok: true,
+        response: { status: "ranked", candidates: [baseCandidate()], requestId: "r1", timingMs: 5 },
+      });
+
+      await fillAndSubmit();
+      expect(container.textContent).not.toContain("option was hidden");
+      expect(container.textContent).not.toContain("options were hidden");
+    });
+
+    it("'Edit search' from the Toll Road Check screen returns to Input and NEVER calls confirmTollReentry", async () => {
+      render();
+      vi.spyOn(api, "searchDropOffPoints").mockResolvedValue({
+        ok: true,
+        response: {
+          status: "ranked",
+          candidates: [baseCandidate({ needsTollReentryConfirmation: true, tollReentryDescription: "Highway 407 — exits and re-enters it during this trip" })],
+          requestId: "r1",
+          timingMs: 5,
+        },
+      });
+      const confirmSpy = vi.spyOn(api, "confirmTollReentry");
+
+      await fillAndSubmit();
+      expect(container.textContent).toContain("toll roads");
+
+      const editLink = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Edit search"))!;
+      act(() => editLink.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      await flush();
+
+      expect(container.textContent).toContain("DropSpot");
+      expect(confirmSpy).not.toHaveBeenCalled();
+    });
+
+    it("a failed confirm-toll-reentry call shows the error screen, and 'Try again' re-issues the IDENTICAL confirm request (same answers already given, per ux-spec.md section 5a.5)", async () => {
+      render();
+      vi.spyOn(api, "searchDropOffPoints").mockResolvedValue({
+        ok: true,
+        response: {
+          status: "ranked",
+          candidates: [baseCandidate({ needsTollReentryConfirmation: true, tollReentryDescription: "Highway 407 — exits and re-enters it during this trip" })],
+          requestId: "r1",
+          timingMs: 5,
+        },
+      });
+      const confirmSpy = vi
+        .spyOn(api, "confirmTollReentry")
+        .mockResolvedValueOnce({ ok: false, errorCode: "network_error" })
+        .mockResolvedValueOnce({
+          ok: true,
+          response: { status: "ranked", candidates: [baseCandidate({ label: "Survivor Rd" })], requestId: "r2", timingMs: 5 },
+        });
+
+      await fillAndSubmit();
+      act(() =>
+        Array.from(container.querySelectorAll("button"))
+          .find((b) => b.textContent?.includes("No, don't include it"))!
+          .dispatchEvent(new MouseEvent("click", { bubbles: true })),
+      );
+      act(() =>
+        Array.from(container.querySelectorAll("button"))
+          .find((b) => b.textContent === "Continue")!
+          .dispatchEvent(new MouseEvent("click", { bubbles: true })),
+      );
+      await flush();
+
+      expect(container.textContent).toContain("Something went wrong");
+
+      const tryAgainButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Try again")!;
+      act(() => tryAgainButton.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      await flush();
+
+      expect(confirmSpy).toHaveBeenCalledTimes(2);
+      expect(confirmSpy.mock.calls[0]).toEqual(confirmSpy.mock.calls[1]);
+      expect(container.textContent).toContain("Survivor Rd");
+    });
+  });
 });

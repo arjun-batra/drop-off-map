@@ -885,10 +885,32 @@ describe("POST /api/drop-off-search -- FR-006f, FR-010, FR-011, FR-012, FR-013",
         const u = new URL(url);
         return u.pathname.includes("/directions/") && u.searchParams.get("mode") !== "transit";
       });
-      // Exactly one driving-Directions call (the FR-006a/b direct-route
-      // baseline, INC-3) -- if INC-9 had added a second call anywhere to
-      // populate `route` independently, this would be 2, not 1.
-      expect(drivingDirectionsCalls).toHaveLength(1);
+      // (INC-14 fixture update, QA) -- `requestBody()` defaults to
+      // avoidTolls: false, so Phase 5 (design.md section 4.6, FR-019) now
+      // legitimately issues 2 additional driving-Directions-with-steps calls
+      // per final candidate (start->candidate, candidate->driverDestination)
+      // on top of the single FR-006a/b baseline call this test originally
+      // asserted was the *only* one -- see docs/handoff.md's INC-14 section
+      // ("this is a mandatory, designed consequence... QA will need to
+      // update this one assertion"). The baseline call is uniquely
+      // identifiable by its exact origin/destination pair (start->
+      // driverDestination); every Phase 5 call has a different origin or
+      // destination (either `start`->candidate or candidate->
+      // `driverDestination`, never both endpoints matching the baseline's
+      // exactly, since a candidate point always differs from both START and
+      // DEST in this fixture). Asserting on that exact pair, rather than the
+      // raw total count, is what actually verifies this test's original
+      // intent -- `route` is derived from the one baseline call, not a
+      // second fetch of the same start->destination pair -- without being
+      // coupled to how many *candidates* Phase 5 happens to check.
+      const baselineCalls = drivingDirectionsCalls.filter(([url]) => {
+        const u = new URL(url);
+        return (
+          u.searchParams.get("origin") === `${START.lat},${START.lng}` &&
+          u.searchParams.get("destination") === `${DEST.lat},${DEST.lng}`
+        );
+      });
+      expect(baselineCalls).toHaveLength(1);
     });
   });
 
@@ -1142,6 +1164,97 @@ describe("POST /api/drop-off-search -- FR-006f, FR-010, FR-011, FR-012, FR-013",
       const { req, res, jsonBody } = createMock({ method: "POST", body: requestBody({ avoidTolls: false }) });
       await handler(req, res);
       expect((jsonBody() as DropOffSearchResponse).status).toBe("ranked");
+    });
+  });
+
+  // FR-019 (INC-14, design.md section 4.6): Phase 5 -- toll re-entry
+  // detection on the MAIN search endpoint (the confirm-toll-reentry
+  // endpoint's own Phase 5 behavior is covered independently in
+  // tests/api/confirm-toll-reentry.test.ts).
+  describe("FR-019 Phase 5 (INC-14): toll re-entry detection on /api/drop-off-search itself", () => {
+    function drivingDirectionsCalls(spy: ReturnType<typeof makeFetchRouter>) {
+      const calls = (spy as unknown as { mock: { calls: [string][] } }).mock.calls;
+      return calls.filter(([url]) => {
+        const u = new URL(url);
+        return u.pathname.includes("/directions/") && u.searchParams.get("mode") !== "transit";
+      });
+    }
+
+    it("avoidTolls=false (default) issues 2 additional driving-Directions calls PER final candidate, on top of the 1 baseline call (design.md section 6.1's '+6 to +8 Directions calls' budget for a 3-candidate response)", async () => {
+      applyEnv(validEnv({ MAX_CANDIDATES_RETURNED: "2" }));
+      const router = makeFetchRouter({});
+      vi.stubGlobal("fetch", router);
+
+      const { req, res, jsonBody } = createMock({ method: "POST", body: requestBody() });
+      await handler(req, res);
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("ranked");
+      expect(body.candidates).toHaveLength(2);
+
+      // 1 baseline + 2 candidates * 2 calls each = 5.
+      expect(drivingDirectionsCalls(router)).toHaveLength(5);
+    });
+
+    it("configurability: raising MAX_CANDIDATES_RETURNED from 2 to 3 for the identical scenario increases Phase 5's driving-Directions call volume proportionally (5 -> 7) -- not a hardcoded candidate count", async () => {
+      applyEnv(validEnv({ MAX_CANDIDATES_RETURNED: "2" }));
+      const lowRouter = makeFetchRouter({});
+      vi.stubGlobal("fetch", lowRouter);
+      const low = createMock({ method: "POST", body: requestBody() });
+      await handler(low.req, low.res);
+      expect(drivingDirectionsCalls(lowRouter)).toHaveLength(5);
+
+      vi.unstubAllGlobals();
+      applyEnv(validEnv({ MAX_CANDIDATES_RETURNED: "3" }));
+      const highRouter = makeFetchRouter({});
+      vi.stubGlobal("fetch", highRouter);
+      const high = createMock({ method: "POST", body: requestBody() });
+      await handler(high.req, high.res);
+      const highBody = high.jsonBody() as DropOffSearchResponse;
+      expect(highBody.candidates).toHaveLength(3);
+      expect(drivingDirectionsCalls(highRouter)).toHaveLength(7);
+    });
+
+    it("avoidTolls=false with no toll pattern anywhere on any candidate's route never sets needsTollReentryConfirmation/tollReentryDescription on any candidate (negative case; genuine on/off/on flagging is exercised end-to-end in tests/api/confirm-toll-reentry.test.ts and at the unit level in tests/routing/tollReentryChecker.test.ts)", async () => {
+      applyEnv(validEnv({ MAX_CANDIDATES_RETURNED: "1" }));
+      vi.stubGlobal("fetch", makeFetchRouter({}));
+      const { req, res, jsonBody } = createMock({ method: "POST", body: requestBody() });
+      await handler(req, res);
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("ranked");
+      for (const c of body.candidates) {
+        expect(c.needsTollReentryConfirmation).toBeUndefined();
+      }
+    });
+
+    it("avoidTolls=true (ranked, non-short-circuited path) issues ZERO Phase 5 calls -- exactly 1 driving-Directions call total, confirming dev did not accidentally leave Phase 5 running when tolls are already avoided", async () => {
+      applyEnv(validEnv());
+      const router = makeFetchRouter({});
+      vi.stubGlobal("fetch", router);
+
+      const { req, res, jsonBody } = createMock({ method: "POST", body: requestBody({ avoidTolls: true }) });
+      await handler(req, res);
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.status).toBe("ranked");
+      expect(body.candidates.length).toBeGreaterThan(0);
+      for (const c of body.candidates) {
+        expect(c.needsTollReentryConfirmation).toBeUndefined();
+        expect(c.tollReentryDescription).toBeUndefined();
+      }
+      // Exactly 1: the avoidTolls baseline call. If Phase 5 had accidentally
+      // been left running regardless of avoidTolls, this would be
+      // 1 + 2*candidates.length instead.
+      expect(drivingDirectionsCalls(router)).toHaveLength(1);
+    });
+
+    it("Phase 5's call-count formula (1 baseline + 2*N) holds for the smallest possible final set (MAX_CANDIDATES_RETURNED=1)", async () => {
+      applyEnv(validEnv({ MAX_CANDIDATES_RETURNED: "1" }));
+      const router = makeFetchRouter({});
+      vi.stubGlobal("fetch", router);
+      const { req, res, jsonBody } = createMock({ method: "POST", body: requestBody() });
+      await handler(req, res);
+      const body = jsonBody() as DropOffSearchResponse;
+      expect(body.candidates).toHaveLength(1);
+      expect(drivingDirectionsCalls(router)).toHaveLength(3); // 1 baseline + 2 for the sole final candidate
     });
   });
 });
