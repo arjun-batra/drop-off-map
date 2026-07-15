@@ -1487,3 +1487,106 @@ Verification performed (no in-repo browser test tooling, so did this manually, n
 4. **`avoidTolls` default-vs-required judgment call (above)** is dev's own reading of an ambiguous design.md comment — flagged for tech-lead to confirm explicitly rather than silently treating it as settled, even though it's the reading that keeps the design's own regression-compatibility promise intact.
 
 **How to run/verify:** `npm run typecheck` (expect only `tests/` errors, none in `src`/`api`), `npm run lint`, `npm run build`. No real end-to-end run is possible in this sandbox (no `MAP_API_KEY`); the mocked smoke test above is the closest available verification of the full request pipeline.
+
+## INC-14: Toll re-entry detection, `confirm-toll-reentry` endpoint, Toll Road Check screen (FR-019) — final increment of the 2026-07-12 change request
+
+**Covers:** FR-019. Per `docs/requirements.md` OQ-10/DEC-... and `docs/ux-spec.md` §5a (Gate-3-approved 2026-07-13): when "avoid tolls" is unchecked and a candidate's actual driven route (`start → candidate → driverDestination`) exits and later re-enters a toll road, the user is asked whether that's acceptable; "No" excludes that candidate entirely. Batched, per-candidate presentation, hard two-round cap, auto-include-with-disclosure for any candidate still unconfirmed after the cap — all per designer's resolved spec, not a dev judgment call.
+
+### What was built
+
+**Backend — shared pipeline extraction + Phase 5 + new endpoint:**
+- `src/search/searchPipeline.ts` (new) — `runSearchPipeline()` extracts design.md section 4's Phases 0–4 (direct route → toll-free short-circuit → candidate generation → detour evaluation → shortlist → transit evaluation → ranking) out of `api/drop-off-search.ts` into a function both that endpoint and the new confirm endpoint call identically. Returns `{ kind: "no_toll_free_route" }` or `{ kind: "computed", route, fullyEvaluated, ranked, timedOut }` — `fullyEvaluated` (the whole transit-evaluated shortlist pool, pre-ranking) is exactly the "already computed and available to reconstruct" pool design.md section 4.6 step 4 calls for, so the confirm endpoint never re-fetches driving/transit data for a candidate it's already evaluated.
+- `src/search/parseSearchRequest.ts` (new) — extracted `parseLocation`/`parseMaxDetourMinutes`/`parseAvoidTolls`/`parseSearchRequest` out of `api/drop-off-search.ts` (byte-identical behavior, including the REV-024-adjacent `avoidTolls` missing-vs-non-boolean judgment call from INC-13, now documented once instead of duplicated) plus a new `parseRejectedCandidateLocations` for the confirm endpoint's own request shape.
+- `src/search/tollReentryPhase.ts` (new) — `computeTollReentryFlags()`: Phase 5 (design.md section 4.6) over an arbitrary candidate subset, returning a `Map<locationKey, {needsTollReentryConfirmation, tollReentryDescription}>` so callers can merge onto a *different* subset than they checked (the confirm endpoint's core need).
+- `src/search/buildCandidates.ts` (new) — `toDropOffSearchCandidates()`, the shared mapping from `FullyEvaluatedCandidate` (labeled) + toll flags → the wire-shape `DropOffSearchCandidate[]`, shared by both endpoints.
+- `src/geo/locationKey.ts` (new) — `locationKey(point)`, a 6-decimal-place string key used everywhere a candidate needs to be compared by location instead of by ID (this app is fully stateless, NFR-003 — there is no server-side candidate ID to compare instead).
+- `src/routing/tollReentryChecker.ts` (new) — `checkTollReentry()` (design.md section 5.1's exact signature): 2 Directions-with-steps calls per candidate (`start→candidate`, `candidate→driverDestination`, both **without** `avoid=tolls` — this phase only ever runs when `avoidTolls === false`), concatenated and run through `analyzeTollUsage()`'s `hasExitReentry` half (built in INC-13, unused until now). `checkTollReentryForCandidates()` fans this out across a small candidate set bounded by `PROVIDER_CONCURRENCY_LIMIT` (the same config value every other provider-call fan-out in this codebase already reads — no new tunable).
+- `src/routing/tollHighwayRules.ts` (edited) — added `describeTollRoadReentry(steps)`, a small sibling to `analyzeTollUsage` (whose section 5.1 signature is fixed and has no room for a description field) that names which toll road matched, e.g. `"Highway 407 — exits and re-enters it during this trip"`. Refactored the existing `TOLL_ROAD_PATTERNS` array into `TOLL_ROADS: Array<{pattern, name}>` so both functions share one source of truth for the identifier list.
+- `api/drop-off-search.ts` (rewritten, same behavior for every pre-existing status, now much shorter) — calls `runSearchPipeline`, then (only when `avoidTolls === false` and the outcome is ranked/fallback) runs Phase 5 over **every** final candidate via `computeTollReentryFlags`, since nothing has been asked about yet on a first response.
+- `api/drop-off-search/confirm-toll-reentry.ts` (new) — `POST /api/drop-off-search/confirm-toll-reentry`. See "Endpoint contract" below.
+
+**Frontend:**
+- `src/frontend/components/TollRoadCheckScreen.tsx` + `.css` (new) — Screen 2a (ux-spec.md §5a). Batched cards, two toggle buttons per card (neither pre-selected), Continue disabled until every card is answered, "← Edit search" identical to the Results screen's affordance. Round 1 vs round 2 is a pure copy switch (`round: 1 | 2` prop) — the component has no idea a "cap" exists; that's `SearchFlow`'s job.
+- `src/frontend/components/LoadingScreen.tsx` (edited) — added an optional `variant?: "search" | "confirm"` prop (defaults to `"search"`, so every pre-INC-14 caller is unaffected) swapping the two copy lines per ux-spec.md §5.1's "reuse, don't build a new screen" instruction.
+- `src/frontend/components/SearchFlow.tsx` (rewritten) — the whole Input → Loading → [Toll Road Check ×0–2] → Results/Error state machine. See "Two-round cap mechanics" below for the exact logic.
+- `src/frontend/components/ResultsScreen.tsx` + `.css` (edited) — added `excludedCandidateCount?: number` prop (ux-spec.md §6.4a's notice, "N option(s) were hidden because…", shown only when non-zero, positioned above the fallback warning banner) and a per-card round-cap disclosure (§5a.4/§6.4 item 7, rendered whenever `candidate.needsTollReentryConfirmation` is still `true` at Results time — see the invariant note below for why that's always the correct, and only, case this can happen).
+- `src/frontend/api.ts` (edited) — added `confirmTollReentry()`, a thin wrapper mirroring `searchDropOffPoints()` exactly (same `SearchOutcome` shape, same abort/401/network-error handling).
+- `src/search/types.ts` (edited) — added `DropOffSearchCandidate.needsTollReentryConfirmation`/`tollReentryDescription`, `ConfirmTollReentryRequest`/`ConfirmTollReentryResponse` (design.md section 5.2's exact shapes), and fixed **REV-024** (see below).
+
+### The `confirm-toll-reentry` endpoint's contract
+
+```ts
+POST /api/drop-off-search/confirm-toll-reentry
+
+// Request
+interface ConfirmTollReentryRequest {
+  originalRequest: DropOffSearchRequest;       // the untouched, original search inputs
+  rejectedCandidateLocations: Array<{ lat: number; lng: number }>; // cumulative "No" answers, empty array is valid
+}
+
+// Response: identical shape to DropOffSearchResponse (design.md section 5.2)
+```
+
+Fully stateless (NFR-003) — every call re-derives the whole search from `originalRequest` via `runSearchPipeline` (the same Phases 0–4 the main endpoint runs), then:
+1. Excludes any candidate in `fullyEvaluated` whose `locationKey` matches `rejectedCandidateLocations` — **no re-fetching of driving/transit data**, since `fullyEvaluated` already has every shortlisted candidate's full transit evaluation from this same pipeline call.
+2. Re-runs `Ranker.rank` over the reduced pool → `newRanked`.
+3. Diffs `newRanked`'s final candidates against `originalRanked` (the *same pipeline call's* own pre-exclusion ranking, computed from the full, unfiltered pool) by `locationKey`. Any candidate present in `newRanked` but **absent** from `originalRanked` is "newly promoted" — only *those* get a fresh `checkTollReentry` call. A candidate present in both (i.e., it was in the original top-N and the caller didn't reject it) is treated as already-answered "Yes" and is **never re-checked** — this is the literal implementation of ux-spec.md §5a.4's "do not re-ask" rule.
+4. Labels + builds the response exactly like the main endpoint.
+
+**Important nuance verified by smoke testing (see below), worth flagging to QA explicitly:** step 3's "original ranking" is *this endpoint's own freshly-recomputed* pre-exclusion ranking, not literally the very first `/api/drop-off-search` response the user saw — there is no session to remember that response by (NFR-003). This is mathematically equivalent as long as nothing about the world changed between the two calls (deterministic sampling from the same polyline/steps), which is the same assumption design.md section 4.6 step 4 already makes ("re-derives the search deterministically"). One consequence: calling this endpoint with an **empty** `rejectedCandidateLocations` (a legitimate request per ux-spec.md §5a.3 — "every card answered Yes") returns the same candidates with `needsTollReentryConfirmation` now `undefined` on all of them (nothing changed vs. this call's own re-derived ranking, so nothing is "newly promoted," so nothing is re-checked) — this is correct, not a bug: it's exactly "the user already said yes, don't ask again."
+
+### Two-round cap mechanics (frontend, `SearchFlow.tsx`)
+
+The backend has **no concept of "round number"** — it's a pure function of `(originalRequest, rejectedCandidateLocations)` each call. The cap is entirely a frontend policy:
+1. `runSearch()` — if the search response has any `needsTollReentryConfirmation: true` candidate, go to `tollCheck` stage, `round: 1`, `rejectedSoFar: []`. Otherwise straight to Results.
+2. Toll Road Check screen (round 1) shows exactly `response.candidates.filter(c => c.needsTollReentryConfirmation)`. On Continue, `runConfirm()` is called with `rejectedSoFar` extended by this round's "No" answers, tagged `completedRound: 1`.
+3. `runConfirm()`'s response: if `completedRound === 1` **and** the response has any newly-flagged candidate → show round 2 (same screen, `round: 2`, copy swapped to "One more thing…"). **Otherwise, always go to Results** — this covers both "nothing flagged, we're done" and "round 2 just completed, cap reached, stop asking regardless of what's still flagged."
+4. Any candidate still carrying `needsTollReentryConfirmation: true` when `Results` is finally reached is, by construction of steps 1–3, always the legitimate round-cap-residual case (SearchFlow never transitions to `results` with a flag present before round 2 has completed) — so `ResultsScreen`'s candidate card can unconditionally render the disclosure whenever that flag is true, with no separate "are we past the cap" prop needed.
+5. The excluded-candidate notice's count (`excludedCandidateCount`) is simply `rejectedSoFar.length` at the point Results is reached — carried as plain component state, no new backend field needed (see the judgment call below).
+
+### Judgment calls (flagged, not silently decided)
+
+1. **No top-level `DropOffSearchResponse` field for "some candidate needs confirmation."** design.md section 5.2 only defines the per-candidate `needsTollReentryConfirmation`; ux-spec.md §5a.0 itself derives "show Screen 2a" by scanning `response.candidates`. The frontend does exactly that (`response.candidates.some(c => c.needsTollReentryConfirmation)`) rather than inventing an undocumented response-level field.
+2. **`tollReentryDescription`'s exact templating.** ux-spec.md §5a.2 shows the mockup line `"Uses Highway 407 — exits and re-enters it during this trip."` and describes it as `tollReentryDescription` "wrapped in a short fixed lead-in ('Uses {highway} — {description}')," but design.md's contract has no separate `highway` field. Dev's reading: the fixed lead-in is literally just `"Uses "`, and `tollReentryDescription` already contains everything after it (`"Highway 407 — exits and re-enters it during this trip"`) — `describeTollRoadReentry()` in `tollHighwayRules.ts` produces exactly that string, and the frontend renders `` `Uses ${tollReentryDescription}` ``, reproducing the mockup's copy exactly without inventing a second field design.md never defined.
+3. **No `excludedCandidateCount` field on `DropOffSearchResponse`.** ux-spec.md §6.4a's notice needs a count of rejected candidates, but the frontend already knows this (it built `rejectedCandidateLocations` itself) — no backend field invented for something the client already has.
+
+### REV-024 fix (comment-only, no behavior change)
+
+`src/search/types.ts`'s doc comment on `DropOffSearchRequest.avoidTolls` previously read: "...a request missing this field or sending a non-boolean value fails shape validation (`invalid_input`)" — this is the **opposite** of the actual, already-shipped (INC-13) behavior. Corrected to state plainly: missing → defaults to `false`; present-but-non-boolean → `invalid_input`. No code changed, only the comment; `parseAvoidTolls()`'s actual logic in `src/search/parseSearchRequest.ts` was already correct and is unchanged.
+
+**REV-023** (design.md §5.2's own ambiguous "no server default/config" phrasing) is tech-lead's doc to fix, not touched here, per the orchestrator's instruction.
+
+### Smoke testing performed
+
+1. **Full regression suite** (`npx vitest run`, 40 files, 672 tests): **671 passed, 1 expected failure.** The one failure (`tests/api/drop-off-search.test.ts` — "adds no new provider call: `route` is populated from the same single driving-Directions call... not a second fetch") asserts exactly 1 driving-Directions call per submission; this is now mechanically false by design once Phase 5 runs (design.md section 3.5/6.1 explicitly budget "+6 to +8 Directions-API calls/submission" for FR-019 when `avoidTolls === false`, which is the default). **This is a mandatory, designed consequence of this increment, not a regression to fix** — QA will need to update this one assertion (and add new INC-14 coverage) as part of its own test pass.
+2. `npx tsc --noEmit`: zero errors across the whole project (`src/`, `api/`, `tests/`).
+3. `npx eslint .`: clean.
+4. `npm run build`: succeeds.
+5. **Standalone backend smoke script** (`tsx`, mocked `global.fetch`, run directly against the real `api/drop-off-search.ts` and `api/drop-off-search/confirm-toll-reentry.ts` handlers — not committed, scratchpad only), covering exactly the trickiest logic in this increment:
+   - A search where every final candidate's driven route shows a toll on/off/on pattern → both final candidates flagged, `tollReentryDescription` correctly names "Highway 407".
+   - Confirm-toll-reentry rejecting one candidate → the rejected candidate is genuinely gone, the previously-accepted survivor is **not** re-flagged (`needsTollReentryConfirmation: undefined`), and the newly-promoted third candidate **is** freshly checked and flagged. Verified via an exact call-count assertion (3 driving-Directions calls total: 1 re-run baseline + 2 for the sole newly-promoted candidate — not 5, which is what a "recheck everyone" bug would produce).
+   - `avoidTolls: true` → zero Phase 5 calls, zero flags anywhere, confirming FR-019's own scope ("never presented when tolls are avoided entirely").
+   - Empty `rejectedCandidateLocations` → valid request, correctly returns the same candidates with no flags (see the nuance above).
+   - Malformed `originalRequest`/`rejectedCandidateLocations` → `invalid_input`, not a crash.
+6. **Standalone frontend smoke test** (temporary, RTL-based, mirroring `tests/frontend/SearchFlow.test.tsx`'s own patterns — not committed): verified the full round-1 → round-2 → Results state machine end-to-end through real component rendering, including: Continue disabled until all cards answered; round 1 accept-all → straight to Results; round 1 reject one → round 2 shown for only the newly-promoted candidate → round 2 (regardless of its own response still carrying a flag) → always Results, never a third screen, with the round-cap disclosure copy and the excluded-candidate notice both rendering correctly; "Edit search" from the Toll Road Check screen returns to Input without ever calling `confirmTollReentry`.
+
+### Known limitations
+
+1. **No real Google Maps Platform credential/network access in this sandbox** (the standing REV-010 limitation carried through every prior increment) — every check above is mocked. The toll-road identifier list (currently just Highway 407 variants, from INC-13) and the exit/re-entry text-pattern heuristic (`analyzeTollUsage`, INC-13) are unchanged by this increment; their known false-positive/false-negative risk (DEC-5/DEC-6) applies identically to Phase 5's use of them.
+2. **The "already-answered, don't re-ask" diff (contract nuance above) assumes the raw candidate pool samples identically between the original search and each confirm call.** If Google's live-traffic-influenced route geometry shifts meaningfully between the two calls (a different polyline gets returned), a previously-accepted candidate's `locationKey` could fail to match, causing it to look "newly promoted" and get re-checked/re-asked unnecessarily. This is the same accepted risk design.md section 4.6 step 4 already signs off on ("re-running the full section 4 pipeline is acceptable cost-wise... re-derives the search deterministically") — not a new gap introduced here, but worth QA probing if a flaky pipeline is suspected.
+3. **NFR-004 latency**: Phase 5 adds a real, if modest, sequential latency cost (design.md section 6.1: "+0.3–0.6s typical") on top of the already-tight ~2.5–4.0s typical-case budget, and the confirm endpoint re-runs the *entire* Phase 0–4 pipeline from scratch on top of that. No new mechanism was needed (the existing INC-7 soft-target/graceful-degradation posture covers it per design.md), but this is the single latency-heaviest path in the whole app.
+
+### How to smoke-test this yourself
+
+No real `MAP_API_KEY` exists in this sandbox. Recommended approach (mirrors what was done above): mock `global.fetch` per `tests/api/drop-off-search.test.ts`'s existing router pattern, call the real default-exported handlers from `api/drop-off-search.ts` and `api/drop-off-search/confirm-toll-reentry.ts` directly with a minimal Vercel-shaped req/res mock (see `tests/helpers/mockVercel.ts`), and inspect the JSON body plus the recorded fetch call list. The trickiest thing to get right in a fixture is distinguishing the Phase 0 baseline Directions call (`origin=start, destination=driverDestination` exactly) from Phase 5's per-candidate calls (`origin=start, destination=<candidate>` or `origin=<candidate>, destination=driverDestination`) — keying mock behavior off the exact origin/destination string pair (not call order/index) is the most robust way, since Phase 5's fan-out concurrency doesn't guarantee call order across candidates.
+
+### Is FR-018–FR-022 functionally complete?
+
+**Yes — this is the last of the five FRs (FR-018 through FR-022) from the 2026-07-12 change request, and with INC-14 landing, all five now have a shipped, smoke-tested implementation:**
+- FR-018 (avoid tolls, hard exclusion, best-effort) — INC-13.
+- FR-019 (toll re-entry confirmation) — this increment.
+- FR-020 (highway exclusion) — INC-11.
+- FR-021 (transit stop/line/direction detail) — INC-12.
+- FR-022 (Google Maps JS API rendering) — INC-10.
+
+This is dev's own functional-completeness assessment based on implementation coverage and my own smoke testing, not a substitute for qa's formal test pass or reviewer's audit — both are still owed before this change request can be formally closed per CLAUDE.md's pipeline (qa tests INC-14 + full regression; reviewer's 5-pass audit; then pm's Phase-4-style FR/NFR delivery confirmation for FR-018–FR-022 specifically, echoing the original Phase 4 closure's format). In particular, qa should be aware going in that: (a) the one pre-existing regression-suite failure described above is expected and needs a deliberate fix, not a revert of this increment; (b) the "already-answered" diffing nuance (contract section above) is worth its own dedicated test; (c) no increment in this entire change request (FR-018 through FR-022) has ever been verified against a real Google Maps Platform credential — the standing REV-010-style caveat applies to all of it collectively, and would be a reasonable single item for release's eventual deploy dry-run to close out.
